@@ -59,7 +59,7 @@ unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()
 # DASH APP
 # --------------------
 app = dash.Dash(__name__)
-
+server = app.server
 app.layout = html.Div([
     html.H1("Анализ складских данных"),
 
