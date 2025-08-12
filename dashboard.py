@@ -439,5 +439,3 @@ def download_peaks_excel(n_clicks, sklad, article, nom):
 
     return dcc.send_bytes(output.read(), filename="всплески_продаж.xlsx")
 
-if __name__ == '__main__':
-    app.run()
