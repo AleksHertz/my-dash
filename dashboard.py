@@ -440,4 +440,5 @@ def download_peaks_excel(n_clicks, sklad, article, nom):
     return dcc.send_bytes(output.read(), filename="всплески_продаж.xlsx")
 
 if __name__ == '__main__':
-    app.run_server(debug=False)
+    port = int(os.environ.get('PORT', 10000))  # Используем порт из переменной окружения или 10000 по умолчанию
+    app.run_server(debug=False, host='0.0.0.0', port=port)
