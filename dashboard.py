@@ -5,12 +5,15 @@ import plotly.graph_objs as go
 import pandas as pd
 import os
 from dash import ctx
-
+import io
+import dash_bootstrap_components as dbc
+import logging
 # --------------------
 # НАСТРОЙКИ
 # --------------------
-HEIGHT_PER_BAR = 30
-MAX_HEIGHT = 1200
+HEIGHT_PER_BAR = 30  # высота одной строки в px
+MAX_VISIBLE_BARS = 50  # сколько строк показывать без прокрутки
+MAX_HEIGHT = HEIGHT_PER_BAR * MAX_VISIBLE_BARS  # высота контейнера в px
 
 # --------------------
 # ЗАГРУЗКА И ПРЕДОБРАБОТКА (один раз при старте)
@@ -75,11 +78,66 @@ app.layout = html.Div([
             style={'marginBottom': '20px'}
         ),
 
-        html.H3("Топ-100 самых ходовых товаров"),
-        dcc.Graph(id='graph-top-fast'),
+        # Выбор топа по количеству для ходовых
+        html.Label("Выберите количество позиций для отображения ходовых товаров:"),
+        dcc.RadioItems(
+            id='top-n-selector',
+            options=[
+                {'label': 'Топ 100', 'value': 100},
+                {'label': 'Топ 500', 'value': 500},
+                {'label': 'Топ 1000', 'value': 1000},
+            ],
+            value=100,
+            labelStyle={'display': 'inline-block', 'marginRight': '15px'},
+            style={'marginBottom': '20px'}
+        ),
 
-        html.H3("Топ-100 товаров по пополнениям"),
-        dcc.Graph(id='graph-top-restock'),
+        html.H3("Топ самых ходовых товаров"),
+        html.Div(
+            dcc.Graph(id='graph-top-fast'),
+            style={
+                'height': '700px',
+                'overflowY': 'scroll',
+                'border': '1px solid #ddd',
+                'padding': '5px',
+                'marginBottom': '10px',
+                'backgroundColor': 'white'
+            }
+        ),
+        dbc.Button("📥 Выгрузить топ ходовых в Excel", id="download-top-fast-btn", color="success", className="mb-4"),
+
+        # Выбор топа по количеству для пополнений (добавлен отдельный селектор)
+        html.Label("Выберите количество позиций для отображения товаров по пополнениям:"),
+        dcc.RadioItems(
+            id='top-n-selector-restock',
+            options=[
+                {'label': 'Топ 100', 'value': 100},
+                {'label': 'Топ 500', 'value': 500},
+                {'label': 'Топ 1000', 'value': 1000},
+            ],
+            value=100,
+            labelStyle={'display': 'inline-block', 'marginRight': '15px'},
+            style={'marginBottom': '20px'}
+        ),
+
+        html.H3("Топ товаров по пополнениям"),
+        html.Div(
+            dcc.Graph(id='graph-top-restock'),
+            style={
+                'height': '700px',
+                'overflowY': 'scroll',
+                'border': '1px solid #ddd',
+                'padding': '5px',
+                'marginBottom': '10px',
+                'backgroundColor': 'white'
+            }
+        ),
+        dbc.Button("📥 Выгрузить топ пополнений в Excel", id="download-top-restock-btn", color="success"),
+
+        # Компоненты для скачивания файлов
+        dcc.Download(id="download-top-fast"),
+        dcc.Download(id="download-top-restock"),
+
     ], style={'marginBottom': 40}),
 
     # ===================== Блок ВСПЛЕСКИ =====================
@@ -141,50 +199,127 @@ app.layout = html.Div([
 # --------------------
 # КОЛБЭКИ
 # --------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# --- Выгрузка топ-ходовых ---
+@app.callback(
+    Output("download-top-fast", "data"),
+    Input("download-top-fast-btn", "n_clicks"),
+    State("sklad-filter", "value"),  # заменили ID
+    State("top-n-selector", "value"),  # заменили ID
+    prevent_initial_call=True
+)
+def export_top_fast_to_excel(n_clicks, selected_sklads, top_n):
+    if df_fast.empty or not selected_sklads:
+        return None
+
+    dff = df_fast[df_fast['Склад'].isin(selected_sklads)]
+    dff = dff.sort_values('Всего_продано', ascending=False).head(top_n)
+
+    if 'Цена_в_начале' in dff.columns and 'Цена_в_конце' in dff.columns:
+        dff['Изменение_цены_%'] = (
+            (dff['Цена_в_конце'] - dff['Цена_в_начале']) / dff['Цена_в_начале'] * 100
+        ).round(2)
+
+    if 'Средний_остаток' in dff.columns:
+        dff['Оборачиваемость'] = (dff['Всего_продано'] / dff['Средний_остаток']).round(2)
+
+    return dcc.send_data_frame(dff.to_excel, f"топ_{top_n}_ходовые.xlsx", index=False)
 
 
 @app.callback(
-    Output('graph-top-fast', 'figure'),
-    Input('sklad-filter', 'value')
+    Output("download-top-restock", "data"),
+    Input("download-top-restock-btn", "n_clicks"),
+    State("sklad-filter", "value"),  # заменили ID
+    State("top-n-selector-restock", "value"),
+    prevent_initial_call=True
 )
-def update_top_fast(selected_sklad):
+def export_top_restock_to_excel(n_clicks, selected_sklads, top_n):
+    if df_restock.empty or not selected_sklads:
+        return None
+
+    dff = df_restock[df_restock['Склад'].isin(selected_sklads)]
+    dff = dff.sort_values('Всего_пополнено', ascending=False).head(top_n)
+
+    if 'Цена_в_начале' in dff.columns and 'Цена_в_конце' in dff.columns:
+        dff['Изменение_цены_%'] = (
+            (dff['Цена_в_конце'] - dff['Цена_в_начале']) / dff['Цена_в_начале'] * 100
+        ).round(2)
+
+    if 'Средний_остаток' in dff.columns:
+        dff['Оборачиваемость'] = (dff['Всего_продано'] / dff['Средний_остаток']).round(2)
+
+    return dcc.send_data_frame(dff.to_excel, f"топ_{top_n}_пополнения.xlsx", index=False)
+
+
+HEIGHT_PER_BAR = 25  # Высота одной строки (можно подкорректировать)
+MAX_CONTAINER_HEIGHT = 700  # Максимальная высота контейнера в px (как в layout)
+@app.callback(
+    Output('graph-top-fast', 'figure'),
+    Input('sklad-filter', 'value'),
+    Input('top-n-selector', 'value'),
+)
+def update_top_fast(selected_sklad, top_n):
     if not selected_sklad:
         return go.Figure()
+
     dff = fast_grouped[fast_grouped['Склад'].isin(selected_sklad)]
-    dff = dff.sort_values('Всего_продано', ascending=False).head(100)
-    height = min(MAX_HEIGHT, HEIGHT_PER_BAR * len(dff))
+    dff = dff.sort_values('Всего_продано', ascending=False).head(top_n)
+
+    # высота графика пропорциональна количеству элементов
+    graph_height = HEIGHT_PER_BAR * len(dff)
+    # ограничение сверху максимальной высотой контейнера
+    graph_height = min(graph_height, MAX_CONTAINER_HEIGHT)
+
     fig = px.bar(
         dff,
         y='Номенклатура',
         x='Всего_продано',
         color='Склад',
         orientation='h',
-        height=height,
-        title='Топ-100 самых ходовых товаров'
+        height=graph_height,
+        title=f'Топ-{top_n} самых ходовых товаров'
     )
-    fig.update_layout(yaxis={'categoryorder':'total ascending'}, template='plotly_white')
+
+    fig.update_layout(
+        yaxis={'categoryorder': 'total ascending'},
+        template='plotly_white',
+        margin=dict(l=250),
+    )
     return fig
+
 
 @app.callback(
     Output('graph-top-restock', 'figure'),
-    Input('sklad-filter', 'value')
+    Input('sklad-filter', 'value'),
+    Input('top-n-selector', 'value'),
 )
-def update_top_restock(selected_sklads):
+def update_top_restock(selected_sklads, top_n):
     if not selected_sklads:
         return go.Figure()
+
     dff = restock_grouped[restock_grouped['Склад'].isin(selected_sklads)]
-    dff = dff.sort_values('Всего_пополнено', ascending=False).head(100)
-    height = min(MAX_HEIGHT, HEIGHT_PER_BAR * len(dff))
+    dff = dff.sort_values('Всего_пополнено', ascending=False).head(top_n)
+
+    graph_height = HEIGHT_PER_BAR * len(dff)
+    graph_height = min(graph_height, MAX_CONTAINER_HEIGHT)
+
     fig = px.bar(
         dff,
         y='Номенклатура',
         x='Всего_пополнено',
         color='Склад',
         orientation='h',
-        height=height,
-        title='Топ-100 товаров по пополнениям'
+        height=graph_height,
+        title=f'Топ-{top_n} товаров по пополнениям'
     )
-    fig.update_layout(yaxis={'categoryorder':'total ascending'}, template='plotly_white')
+
+    fig.update_layout(
+        yaxis={'categoryorder': 'total ascending'},
+        template='plotly_white',
+        margin=dict(l=250),
+    )
     return fig
 
 @app.callback(
@@ -305,4 +440,4 @@ def download_peaks_excel(n_clicks, sklad, article, nom):
     return dcc.send_bytes(output.read(), filename="всплески_продаж.xlsx")
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='127.0.0.1', port=8050, debug=True)
