@@ -1,1 +1,1 @@
-web: gunicorn dashboard:server --timeout 60 --bind 0.0.0.0:$PORT
+gunicorn dashboard:server --bind 0.0.0.0:8050 --timeout 60
