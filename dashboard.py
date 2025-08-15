@@ -131,34 +131,27 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_and_prepare_2025_parquet(file_path: str) -> pd.DataFrame:
-    if not os.path.exists(file_path):
-        print(f"Файл {file_path} не найден.")
-        return pd.DataFrame()
+    df = pd.read_parquet(file_path, engine="pyarrow")
 
-    try:
-        # Читаем Parquet, сразу конвертируем category в str
-        df = pd.read_parquet(file_path, engine='pyarrow')
-        for col in ["Артикул", "Номенклатура"]:
-            if pd.api.types.is_categorical_dtype(df[col]):
-                df[col] = df[col].astype(str).str.strip()
-            else:
-                df[col] = df[col].astype(str).str.strip()
-        
-        # Конвертируем дату
+    # Приведение типов
+    for col in ["Артикул", "Номенклатура"]:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
+
+    if "Дата" in df.columns:
         df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
-        
-        # Каноническое имя
-        df["Артикул_товар"] = df["Артикул"] + "|" + df["Номенклатура"]
-        df["Номенклатура_канон"] = df["Номенклатура"]  # если нужна отдельная колонка
 
-        # Остаток и цена в числовой
+    if "Остаток" in df.columns:
         df["Остаток"] = pd.to_numeric(df["Остаток"], errors="coerce")
-        df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce")
-        
-        # Удаляем некорректные строки
-        df = df.dropna(subset=["Дата", "Артикул", "Остаток"])
 
-        return df
+    if "Цена" in df.columns:
+        df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce")
+
+    # Создаём колонку, если её нет
+    if "Аномалия" not in df.columns:
+        df["Аномалия"] = 0  # или False, если это флаг
+
+    return df
 
     except Exception as e:
         print(f"Ошибка при загрузке {file_path}: {e}")
