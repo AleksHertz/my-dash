@@ -70,38 +70,55 @@ unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()
 
 def add_canonical_name(df: pd.DataFrame) -> pd.DataFrame:
     """Для каждого (Склад, Артикул, Номенклатура) выбираем каноническое название номенклатуры (мода)."""
-    # Уникальные комбинации Артикул + Номенклатура
+    if df is None or df.empty:
+        return pd.DataFrame()
+    
     df = df.copy()
-    df["Артикул_товар"] = df["Артикул"] + "|" + df["Номенклатура"]
+    
+    # Проверка наличия нужных колонок
+    for col in ["Артикул", "Номенклатура", "Склад"]:
+        if col not in df.columns:
+            df[col] = ""
+    
+    df["Артикул_товар"] = df["Артикул"].astype(str) + "|" + df["Номенклатура"].astype(str)
 
-    mode_map = (
-        df.groupby(["Склад", "Артикул_товар"])["Номенклатура"]
-        .agg(lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iloc[0])
-    )
-    variants_map = (
-        df.groupby(["Склад", "Артикул_товар"])["Номенклатура"]
-        .agg(lambda s: ", ".join(sorted(set(s.dropna()))))
-    )
+    # Мода или первая непустая строка
+    try:
+        mode_map = (
+            df.groupby(["Склад", "Артикул_товар"])["Номенклатура"]
+            .agg(lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iloc[0] if not s.dropna().empty else "")
+        )
+        variants_map = (
+            df.groupby(["Склад", "Артикул_товар"])["Номенклатура"]
+            .agg(lambda s: ", ".join(sorted(set(s.dropna()))) if not s.dropna().empty else "")
+        )
+        idx = df.set_index(["Склад", "Артикул_товар"]).index
+        df["Номенклатура_канон"] = idx.map(mode_map.to_dict())
+        df["Номенклатура_варианты"] = idx.map(variants_map.to_dict())
+        df["Смена_наименования"] = df["Номенклатура"] != df["Номенклатура_канон"]
+    except Exception as e:
+        df["Номенклатура_канон"] = df["Номенклатура"]
+        df["Номенклатура_варианты"] = df["Номенклатура"]
+        df["Смена_наименования"] = False
+        print(f"[add_canonical_name] Ошибка при вычислении канонических имен: {e}")
 
-    idx = df.set_index(["Склад", "Артикул_товар"]).index
-    df["Номенклатура_канон"] = idx.map(mode_map.to_dict())
-    df["Номенклатура_варианты"] = idx.map(variants_map.to_dict())
-    df["Смена_наименования"] = df["Номенклатура"] != df["Номенклатура_канон"]
     return df
 
 
 def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """Считаем 'Продано' и 'Пришло' по уникальным товарам (Артикул_товар), агрегируем по дате."""
-    if df.empty:
+    if df is None or df.empty:
         for c in ["Продано", "Пришло", "Цена_изменилась", "Аномалия"]:
             df[c] = pd.Series(dtype=float if c in ["Продано", "Пришло"] else bool)
         return df
 
-    req = ["Склад", "Артикул_товар", "Дата", "Остаток", "Цена"]
-    miss = [c for c in req if c not in df.columns]
-    if miss:
-        raise ValueError(f"Отсутствуют колонки: {miss}")
+    # Проверка колонок
+    for col in ["Склад", "Артикул_товар", "Дата", "Остаток", "Цена"]:
+        if col not in df.columns:
+            df[col] = 0 if col in ["Остаток", "Цена"] else ""
 
+    df = df.copy()
+    df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
     df["Дата_только"] = df["Дата"].dt.normalize()
 
     # Агрегируем по уникальному товару (Склад + Артикул_товар) и дате
@@ -111,9 +128,9 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
         .agg({
             "Остаток": "first",
             "Цена": "first",
-            "Номенклатура": "first",
-            "Номенклатура_канон": "first",
-            "Номенклатура_варианты": "first"
+            "Номенклатура": "first" if "Номенклатура" in df.columns else (lambda x: ""),
+            "Номенклатура_канон": "first" if "Номенклатура_канон" in df.columns else (lambda x: ""),
+            "Номенклатура_варианты": "first" if "Номенклатура_варианты" in df.columns else (lambda x: "")
         })
     )
     df_daily.rename(columns={"Дата_только": "Дата"}, inplace=True)
@@ -131,7 +148,11 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_and_prepare_2025_parquet(file_path: str) -> pd.DataFrame:
-    df = pd.read_parquet(file_path, engine="pyarrow")
+    try:
+        df = pd.read_parquet(file_path, engine="pyarrow")
+    except Exception as e:
+        print(f"[load_and_prepare_2025_parquet] Ошибка чтения файла: {e}")
+        return pd.DataFrame()
 
     # Приведение типов
     for col in ["Артикул", "Номенклатура"]:
@@ -141,41 +162,33 @@ def load_and_prepare_2025_parquet(file_path: str) -> pd.DataFrame:
     if "Дата" in df.columns:
         df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
 
-    if "Остаток" in df.columns:
-        df["Остаток"] = pd.to_numeric(df["Остаток"], errors="coerce")
+    for col in ["Остаток", "Цена"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    if "Цена" in df.columns:
-        df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce")
-
-    # Создаём колонку, если её нет
     if "Аномалия" not in df.columns:
-        df["Аномалия"] = 0  # или False, если это флаг
+        df["Аномалия"] = False
 
     return df
 
 
 def safe_filter_anomaly(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Возвращает датафрейм без аномалий.
-    Если датафрейм пустой, возвращает пустой датафрейм.
-    Если колонки 'Аномалия' нет, создаёт её со значениями False.
-    """
+    """Возвращает датафрейм без аномалий, безопасно при любых проблемах."""
     if df is None or df.empty:
-        return pd.DataFrame()  # датафрейм пустой
-    
+        return pd.DataFrame()
+    df = df.copy()
     if "Аномалия" not in df.columns:
-        df = df.copy()  # чтобы не мутировать исходный
         df["Аномалия"] = False
-    
     return df.loc[~df["Аномалия"]].copy()
-    
+
+
 # --- Использование ---
 df_2025 = load_and_prepare_2025_parquet("data/itog.parquet")
 df_2025_clean = safe_filter_anomaly(df_2025)
 
 unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist()) if not df_2025_clean.empty else []
-unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].dropna().astype(str).unique().tolist()) if not df_2025_clean.empty else []
-unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].dropna().unique().tolist()) if not df_2025_clean.empty else []
+unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].dropna().astype(str).unique().tolist()) if not df_2025_clean.empty and "Артикул_товар" in df_2025_clean.columns else []
+unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].dropna().unique().tolist()) if not df_2025_clean.empty and "Номенклатура_канон" in df_2025_clean.columns else []
 
 # --------------------
 # DASH APP
