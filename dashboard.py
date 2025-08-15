@@ -157,15 +157,17 @@ def load_and_prepare_2025_parquet(file_path: str) -> pd.DataFrame:
 def safe_filter_anomaly(df: pd.DataFrame) -> pd.DataFrame:
     """
     Возвращает датафрейм без аномалий.
-    Если датафрейм пустой или колонки 'Аномалия' нет, возвращает безопасный результат.
+    Если датафрейм пустой, возвращает пустой датафрейм.
+    Если колонки 'Аномалия' нет, создаёт её со значениями False.
     """
-    if df.empty:
-        return pd.DataFrame()
+    if df is None or df.empty:
+        return pd.DataFrame()  # датафрейм пустой
     
     if "Аномалия" not in df.columns:
-        df["Аномалия"] = False  # заглушка: считаем, что аномалий нет
+        df = df.copy()  # чтобы не мутировать исходный
+        df["Аномалия"] = False
     
-    return df[~df["Аномалия"]].copy()
+    return df.loc[~df["Аномалия"]].copy()
     
 # --- Использование ---
 df_2025 = load_and_prepare_2025_parquet("data/itog.parquet")
