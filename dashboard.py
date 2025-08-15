@@ -14,6 +14,7 @@ import xlsxwriter
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 import zipfile
+import requests
 # --------------------
 # НАСТРОЙКИ
 # --------------------
@@ -142,7 +143,7 @@ def load_and_prepare_2025(base_path: str = "data/агрегированные") 
 
     if not frames:
         print(f"Нет файлов для объединения в {base_path}, возвращаем пустой DataFrame")
-        return pd.DataFrame()  # безопасный вариант при пустой папке
+        return pd.DataFrame()
 
     df = pd.concat(frames, ignore_index=True)
 
@@ -158,18 +159,21 @@ def load_and_prepare_2025(base_path: str = "data/агрегированные") 
     df = calculate_daily_metrics(df)
     return df
 
-# --- Распаковка архива для Railway ---
-archive_path = "data/aggregated.zip"
+# --- Скачиваем и распаковываем архив с GitHub ---
+archive_url = "https://github.com/AleksHertz/my-dash/blob/main/data/aggregated.zip"
 extract_path = "data/агрегированные"
 
-if not os.path.exists(extract_path) or not os.listdir(extract_path):
-    os.makedirs(extract_path, exist_ok=True)
+os.makedirs(extract_path, exist_ok=True)
+
+if not os.listdir(extract_path):
     try:
-        with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+        response = requests.get(archive_url)
+        response.raise_for_status()  # проверка успешности запроса
+        with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
             zip_ref.extractall(extract_path)
-        print(f"Архив {archive_path} распакован в {extract_path}")
+        print(f"Архив с GitHub распакован в {extract_path}")
     except Exception as e:
-        print(f"Ошибка при распаковке архива: {e}")
+        print(f"Ошибка при скачивании или распаковке архива: {e}")
 
 # --- Загружаем данные ---
 df_2025 = load_and_prepare_2025(extract_path)
