@@ -16,6 +16,7 @@ from openpyxl.utils import get_column_letter
 from zipfile import ZipFile
 import requests
 from io import BytesIO
+import pyarrow
 # --------------------
 # НАСТРОЙКИ
 # --------------------
