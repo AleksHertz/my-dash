@@ -130,47 +130,39 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return df_daily
 
 
-def load_and_prepare_2025_parquet(parquet_path: str = "data/itog.parquet") -> pd.DataFrame:
-    """
-    Чтение Parquet по кускам с экономией памяти, приведение типов и подготовка данных.
-    """
-    frames = []
-    columns_needed = ["Дата", "Артикул", "Номенклатура", "Остаток", "Цена", "Склад"]
-
-    # Открываем Parquet через pyarrow
-    parquet_file = pq.ParquetFile(parquet_path)
-    for rg_idx in range(parquet_file.num_row_groups):
-        try:
-            chunk_table = parquet_file.read_row_group(rg_idx, columns=columns_needed)
-            chunk = chunk_table.to_pandas()
-
-            # Приведение типов для экономии памяти
-            chunk["Дата"] = pd.to_datetime(chunk["Дата"], errors="coerce")
-            chunk["Артикул"] = chunk["Артикул"].astype(str).str.strip()
-            chunk["Номенклатура"] = chunk["Номенклатура"].astype("category")
-            chunk["Склад"] = chunk["Склад"].astype("category")
-            chunk["Остаток"] = pd.to_numeric(chunk["Остаток"], errors="coerce", downcast="float")
-            chunk["Цена"] = pd.to_numeric(chunk["Цена"], errors="coerce", downcast="float")
-
-            # Убираем полностью пустые строки
-            chunk = chunk.dropna(subset=["Дата", "Артикул", "Остаток"])
-            frames.append(chunk)
-
-        except Exception as e:
-            print(f"Ошибка при чтении row_group {rg_idx}: {e}")
-
-    if not frames:
-        print(f"Нет данных в {parquet_path}, возвращаем пустой DataFrame")
+def load_and_prepare_2025_parquet(file_path: str) -> pd.DataFrame:
+    if not os.path.exists(file_path):
+        print(f"Файл {file_path} не найден.")
         return pd.DataFrame()
 
-    df = pd.concat(frames, ignore_index=True)
+    try:
+        # Читаем Parquet, сразу конвертируем category в str
+        df = pd.read_parquet(file_path, engine='pyarrow')
+        for col in ["Артикул", "Номенклатура"]:
+            if pd.api.types.is_categorical_dtype(df[col]):
+                df[col] = df[col].astype(str).str.strip()
+            else:
+                df[col] = df[col].astype(str).str.strip()
+        
+        # Конвертируем дату
+        df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
+        
+        # Каноническое имя
+        df["Артикул_товар"] = df["Артикул"] + "|" + df["Номенклатура"]
+        df["Номенклатура_канон"] = df["Номенклатура"]  # если нужна отдельная колонка
 
-    # Дальше можно применять твои функции обработки
-    df = add_canonical_name(df)
-    df = calculate_daily_metrics(df)
+        # Остаток и цена в числовой
+        df["Остаток"] = pd.to_numeric(df["Остаток"], errors="coerce")
+        df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce")
+        
+        # Удаляем некорректные строки
+        df = df.dropna(subset=["Дата", "Артикул", "Остаток"])
 
-    return df
+        return df
 
+    except Exception as e:
+        print(f"Ошибка при загрузке {file_path}: {e}")
+        return pd.DataFrame()
 # --- Использование ---
 df_2025 = load_and_prepare_2025_parquet("data/itog.parquet")
 df_2025_clean = df_2025[~df_2025["Аномалия"]].copy() if not df_2025.empty else pd.DataFrame()
