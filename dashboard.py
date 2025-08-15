@@ -13,6 +13,7 @@ import numpy as np
 import xlsxwriter
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
+import zipfile
 # --------------------
 # НАСТРОЙКИ
 # --------------------
@@ -145,7 +146,20 @@ def load_and_prepare_2025(base_path: str = "data/агрегированные") 
     df = add_canonical_name(df)
     df = calculate_daily_metrics(df)
     return df
+    
+# --- Распаковка архива для Railway ---
+archive_path = "data/aggregated.zip"
+extract_path = "data/агрегированные"
 
+# Проверяем, есть ли уже распакованные файлы
+if not os.path.exists(extract_path) or not os.listdir(extract_path):
+    os.makedirs(extract_path, exist_ok=True)
+    try:
+        with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_path)
+        print(f"Архив {archive_path} распакован в {extract_path}")
+    except Exception as e:
+        print(f"Ошибка при распаковке архива: {e}")
 
 # --- Загружаем данные ---
 df_2025 = load_and_prepare_2025("data/агрегированные")
