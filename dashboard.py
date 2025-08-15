@@ -152,10 +152,7 @@ def load_and_prepare_2025_parquet(file_path: str) -> pd.DataFrame:
         df["Аномалия"] = 0  # или False, если это флаг
 
     return df
-
-    except Exception as e:
-        print(f"Ошибка при загрузке {file_path}: {e}")
-        return pd.DataFrame()
+    
 # --- Использование ---
 df_2025 = load_and_prepare_2025_parquet("data/itog.parquet")
 df_2025_clean = df_2025[~df_2025["Аномалия"]].copy() if not df_2025.empty else pd.DataFrame()
