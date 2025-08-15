@@ -155,6 +155,9 @@ def load_and_prepare_2025_parquet(file_path: str) -> pd.DataFrame:
     
 # --- Использование ---
 df_2025 = load_and_prepare_2025_parquet("data/itog.parquet")
+if "Аномалия" not in df_2025.columns:
+    df_2025["Аномалия"] = False
+
 df_2025_clean = df_2025[~df_2025["Аномалия"]].copy() if not df_2025.empty else pd.DataFrame()
 
 unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist()) if not df_2025_clean.empty else []
