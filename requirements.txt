@@ -5,3 +5,4 @@ openpyxl
 xlsxwriter
 gunicorn
 dash-bootstrap-components
+pyarrow
