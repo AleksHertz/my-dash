@@ -128,11 +128,22 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 def load_and_prepare_2025(base_path: str = "data/агрегированные") -> pd.DataFrame:
     frames = []
+
     for sklad in ("москва", "хабаровск"):
-        for f in glob.glob(os.path.join(base_path, sklad, "*.csv")):
+        # Ищем все CSV-файлы рекурсивно, учитывая возможные подпапки
+        pattern = os.path.join(base_path, "**", sklad, "*.csv")
+        files = glob.glob(pattern, recursive=True)
+        if not files:
+            print(f"Внимание: нет файлов для склада '{sklad}' в {base_path}")
+        for f in files:
             tmp = pd.read_csv(f)
             tmp["Склад"] = sklad.capitalize()
             frames.append(tmp)
+
+    if not frames:
+        print(f"Нет файлов для объединения в {base_path}, возвращаем пустой DataFrame")
+        return pd.DataFrame()  # безопасный вариант при пустой папке
+
     df = pd.concat(frames, ignore_index=True)
 
     df["Дата"] = pd.to_datetime(df["Дата"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
@@ -146,12 +157,11 @@ def load_and_prepare_2025(base_path: str = "data/агрегированные") 
     df = add_canonical_name(df)
     df = calculate_daily_metrics(df)
     return df
-    
+
 # --- Распаковка архива для Railway ---
 archive_path = "data/aggregated.zip"
 extract_path = "data/агрегированные"
 
-# Проверяем, есть ли уже распакованные файлы
 if not os.path.exists(extract_path) or not os.listdir(extract_path):
     os.makedirs(extract_path, exist_ok=True)
     try:
@@ -162,13 +172,13 @@ if not os.path.exists(extract_path) or not os.listdir(extract_path):
         print(f"Ошибка при распаковке архива: {e}")
 
 # --- Загружаем данные ---
-df_2025 = load_and_prepare_2025("data/агрегированные")
-df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
+df_2025 = load_and_prepare_2025(extract_path)
+df_2025_clean = df_2025[~df_2025["Аномалия"]].copy() if not df_2025.empty else pd.DataFrame()
 
 # --- Уникальные значения для фильтров ---
-unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist())
-unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].dropna().astype(str).unique().tolist())
-unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].dropna().unique().tolist())
+unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist()) if not df_2025_clean.empty else []
+unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].dropna().astype(str).unique().tolist()) if not df_2025_clean.empty else []
+unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].dropna().unique().tolist()) if not df_2025_clean.empty else []
 
 # --------------------
 # DASH APP
