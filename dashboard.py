@@ -152,13 +152,24 @@ def load_and_prepare_2025_parquet(file_path: str) -> pd.DataFrame:
         df["Аномалия"] = 0  # или False, если это флаг
 
     return df
+
+
+def safe_filter_anomaly(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Возвращает датафрейм без аномалий.
+    Если датафрейм пустой или колонки 'Аномалия' нет, возвращает безопасный результат.
+    """
+    if df.empty:
+        return pd.DataFrame()
+    
+    if "Аномалия" not in df.columns:
+        df["Аномалия"] = False  # заглушка: считаем, что аномалий нет
+    
+    return df[~df["Аномалия"]].copy()
     
 # --- Использование ---
 df_2025 = load_and_prepare_2025_parquet("data/itog.parquet")
-if "Аномалия" not in df_2025.columns:
-    df_2025["Аномалия"] = False
-
-df_2025_clean = df_2025[~df_2025["Аномалия"]].copy() if not df_2025.empty else pd.DataFrame()
+df_2025_clean = safe_filter_anomaly(df_2025)
 
 unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist()) if not df_2025_clean.empty else []
 unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].dropna().astype(str).unique().tolist()) if not df_2025_clean.empty else []
