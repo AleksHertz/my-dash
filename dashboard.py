@@ -13,7 +13,7 @@ import numpy as np
 import xlsxwriter
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
-import zipfile
+from zipfile import ZipFile
 import requests
 from io import BytesIO
 # --------------------
