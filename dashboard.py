@@ -160,7 +160,7 @@ def load_and_prepare_2025(base_path: str = "data/агрегированные") 
     return df
 
 # --- Скачиваем и распаковываем архив с GitHub ---
-archive_url = "https://github.com/AleksHertz/my-dash/blob/main/data/aggregated.zip"
+archive_url = "https://github.com/AleksHertz/my-dash/raw/refs/heads/main/data/aggregated.zip"
 extract_path = "data/агрегированные"
 
 os.makedirs(extract_path, exist_ok=True)
