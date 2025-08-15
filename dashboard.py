@@ -15,6 +15,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 import zipfile
 import requests
+from io import BytesIO
 # --------------------
 # НАСТРОЙКИ
 # --------------------
