@@ -128,60 +128,33 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return df_daily
 
 
-def load_and_prepare_2025(base_path: str = "data/агрегированные") -> pd.DataFrame:
-    frames = []
-    columns_needed = ["Дата", "Артикул", "Номенклатура", "Остаток", "Цена"]
-
-    for sklad in ("Москва", "Хабаровск"):
-        pattern = os.path.join(base_path, "**", sklad, "*.csv")
-        files = glob.glob(pattern, recursive=True)
-        if not files:
-            print(f"Внимание: нет файлов для склада '{sklad.lower()}' в {base_path}")
-            continue
-
-        for f in files:
-            try:
-                for chunk in pd.read_csv(f, usecols=columns_needed, chunksize=10000):
-                    chunk["Склад"] = sklad
-                    chunk["Дата"] = pd.to_datetime(chunk["Дата"], errors="coerce")
-                    chunk["Артикул"] = chunk["Артикул"].astype(str).str.strip()
-                    chunk["Номенклатура"] = chunk["Номенклатура"].astype(str).str.strip()
-                    chunk["Остаток"] = pd.to_numeric(chunk["Остаток"], errors="coerce")
-                    chunk["Цена"] = pd.to_numeric(chunk["Цена"], errors="coerce")
-                    chunk = chunk.dropna(subset=["Дата", "Артикул", "Остаток"])
-                    frames.append(chunk)
-            except Exception as e:
-                print(f"Ошибка при чтении файла {f}: {e}")
-
-    if not frames:
-        print(f"Нет файлов для объединения в {base_path}, возвращаем пустой DataFrame")
+def load_and_prepare_2025(parquet_path: str = "data/itog.parquet") -> pd.DataFrame:
+    if not os.path.exists(parquet_path):
+        print(f"Файл {parquet_path} не найден")
         return pd.DataFrame()
 
-    # Объединяем только после обработки всех чанков
-    df = pd.concat(frames, ignore_index=True)
+    try:
+        df = pd.read_parquet(parquet_path, engine="pyarrow")
+    except Exception as e:
+        print(f"Ошибка при чтении Parquet: {e}")
+        return pd.DataFrame()
+
+    # Приведение типов и очистка
+    df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
+    df["Артикул"] = df["Артикул"].astype(str).str.strip()
+    df["Номенклатура"] = df["Номенклатура"].astype(str).str.strip()
+    df["Остаток"] = pd.to_numeric(df["Остаток"], errors="coerce")
+    df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce")
+
+    df = df.dropna(subset=["Дата", "Артикул", "Остаток"])
+
     df = add_canonical_name(df)
     df = calculate_daily_metrics(df)
+
     return df
 
-# --- Пример скачивания ZIP с GitHub прямо в память ---
-def download_and_extract_zip(github_url: str, extract_path: str):
-    os.makedirs(extract_path, exist_ok=True)
-    try:
-        r = requests.get(github_url)
-        r.raise_for_status()
-        with ZipFile(BytesIO(r.content)) as zip_ref:
-            zip_ref.extractall(extract_path)
-        print(f"Архив успешно распакован в {extract_path}")
-    except Exception as e:
-        print(f"Ошибка при скачивании или распаковке архива: {e}")
-
-
 # --- Использование ---
-github_zip_url = "https://github.com/AleksHertz/my-dash/raw/refs/heads/main/data/aggregated.zip"  # замените на реальный URL
-extract_path = "data/агрегированные"
-download_and_extract_zip(github_zip_url, extract_path)
-
-df_2025 = load_and_prepare_2025(extract_path)
+df_2025 = load_and_prepare_2025("data/itog.parquet")
 df_2025_clean = df_2025[~df_2025["Аномалия"]].copy() if not df_2025.empty else pd.DataFrame()
 
 unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist()) if not df_2025_clean.empty else []
