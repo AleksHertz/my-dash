@@ -17,6 +17,7 @@ from zipfile import ZipFile
 import requests
 from io import BytesIO
 import pyarrow
+import pyarrow.parquet as pq
 # --------------------
 # НАСТРОЙКИ
 # --------------------
@@ -129,33 +130,49 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return df_daily
 
 
-def load_and_prepare_2025(parquet_path: str = "data/itog.parquet") -> pd.DataFrame:
-    if not os.path.exists(parquet_path):
-        print(f"Файл {parquet_path} не найден")
+def load_and_prepare_2025_parquet(parquet_path: str = "data/itog.parquet") -> pd.DataFrame:
+    """
+    Чтение Parquet по кускам с экономией памяти, приведение типов и подготовка данных.
+    """
+    frames = []
+    columns_needed = ["Дата", "Артикул", "Номенклатура", "Остаток", "Цена", "Склад"]
+
+    # Открываем Parquet через pyarrow
+    parquet_file = pq.ParquetFile(parquet_path)
+    for rg_idx in range(parquet_file.num_row_groups):
+        try:
+            chunk_table = parquet_file.read_row_group(rg_idx, columns=columns_needed)
+            chunk = chunk_table.to_pandas()
+
+            # Приведение типов для экономии памяти
+            chunk["Дата"] = pd.to_datetime(chunk["Дата"], errors="coerce")
+            chunk["Артикул"] = chunk["Артикул"].astype(str).str.strip()
+            chunk["Номенклатура"] = chunk["Номенклатура"].astype("category")
+            chunk["Склад"] = chunk["Склад"].astype("category")
+            chunk["Остаток"] = pd.to_numeric(chunk["Остаток"], errors="coerce", downcast="float")
+            chunk["Цена"] = pd.to_numeric(chunk["Цена"], errors="coerce", downcast="float")
+
+            # Убираем полностью пустые строки
+            chunk = chunk.dropna(subset=["Дата", "Артикул", "Остаток"])
+            frames.append(chunk)
+
+        except Exception as e:
+            print(f"Ошибка при чтении row_group {rg_idx}: {e}")
+
+    if not frames:
+        print(f"Нет данных в {parquet_path}, возвращаем пустой DataFrame")
         return pd.DataFrame()
 
-    try:
-        df = pd.read_parquet(parquet_path, engine="pyarrow")
-    except Exception as e:
-        print(f"Ошибка при чтении Parquet: {e}")
-        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)
 
-    # Приведение типов и очистка
-    df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
-    df["Артикул"] = df["Артикул"].astype(str).str.strip()
-    df["Номенклатура"] = df["Номенклатура"].astype(str).str.strip()
-    df["Остаток"] = pd.to_numeric(df["Остаток"], errors="coerce")
-    df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce")
-
-    df = df.dropna(subset=["Дата", "Артикул", "Остаток"])
-
+    # Дальше можно применять твои функции обработки
     df = add_canonical_name(df)
     df = calculate_daily_metrics(df)
 
     return df
 
 # --- Использование ---
-df_2025 = load_and_prepare_2025("data/itog.parquet")
+df_2025 = load_and_prepare_2025_parquet("data/itog.parquet")
 df_2025_clean = df_2025[~df_2025["Аномалия"]].copy() if not df_2025.empty else pd.DataFrame()
 
 unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist()) if not df_2025_clean.empty else []
