@@ -131,14 +131,14 @@ def load_and_prepare_2025(base_path: str = "data/агрегированные") 
     frames = []
 
     for sklad in ("москва", "хабаровск"):
-        # Ищем все CSV-файлы рекурсивно, учитывая возможные подпапки
-        pattern = os.path.join(base_path, "**", sklad, "*.csv")
+        folder = sklad.capitalize()  # корректное имя папки
+        pattern = os.path.join(base_path, "**", folder, "*.csv")
         files = glob.glob(pattern, recursive=True)
         if not files:
             print(f"Внимание: нет файлов для склада '{sklad}' в {base_path}")
         for f in files:
             tmp = pd.read_csv(f)
-            tmp["Склад"] = sklad.capitalize()
+            tmp["Склад"] = folder
             frames.append(tmp)
 
     if not frames:
@@ -154,7 +154,6 @@ def load_and_prepare_2025(base_path: str = "data/агрегированные") 
     df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce")
 
     df = df.dropna(subset=["Дата", "Артикул", "Остаток"]).copy()
-
     df = add_canonical_name(df)
     df = calculate_daily_metrics(df)
     return df
