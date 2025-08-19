@@ -6,3 +6,4 @@ xlsxwriter
 gunicorn
 dash-bootstrap-components
 pyarrow
+polars
