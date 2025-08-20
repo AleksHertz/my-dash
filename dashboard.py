@@ -71,7 +71,7 @@ unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()
 # --- Функции подготовки данных ---
 
 def add_canonical_name(df: pl.DataFrame) -> pl.DataFrame:
-    """Для каждого (Склад, Артикул, Номенклатура) выбираем каноническое название (мода)."""
+    """Для каждого (Склад, Артикул) выбираем каноническое название (мода)."""
     try:
         if df is None or df.is_empty():
             return pl.DataFrame()
@@ -82,18 +82,17 @@ def add_canonical_name(df: pl.DataFrame) -> pl.DataFrame:
                 (pl.col("Артикул").cast(str) + "|" + pl.col("Номенклатура").cast(str)).alias("Артикул_товар")
             )
 
-        # Мода (наиболее частое название)
+        # Мода (основное название)
         mode_df = (
             df.group_by(["Склад", "Артикул_товар"])
               .agg(pl.col("Номенклатура").mode().first().alias("Номенклатура_канон"))
         )
 
-        # Все варианты названий
+        # Все варианты
         variants_df = (
             df.group_by(["Склад", "Артикул_товар"])
               .agg(pl.col("Номенклатура").drop_nulls().unique().sort().alias("Номенклатура_варианты"))
-        ).with_columns(
-            pl.col("Номенклатура_варианты").list.join(", ")
+              .with_columns(pl.col("Номенклатура_варианты").list.join(", "))
         )
 
         # Объединение
@@ -111,38 +110,35 @@ def add_canonical_name(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def calculate_daily_metrics(df: pl.DataFrame) -> pl.DataFrame:
-    """Считаем 'Продано' и 'Пришло' по уникальным товарам, агрегируем по дате."""
+    """Считаем 'Продано' и 'Пришло' по складам и товарам (агрегировано по дате)."""
     try:
         if df is None or df.is_empty():
-            return pl.DataFrame(
-                {"Продано": [], "Пришло": [], "Цена_изменилась": [], "Аномалия": []}
-            )
+            return pl.DataFrame()
 
         # Приведение даты
         if "Дата" in df.columns:
-            df = df.with_columns(pl.col("Дата").str.strptime(pl.Date, strict=False))
+            df = df.with_columns(pl.col("Дата").cast(pl.Date))
 
-        # Агрегируем по складу, товару, дате
+        # Агрегация по складу, товару, дате
         df_daily = (
             df.sort("Дата")
               .group_by(["Склад", "Артикул_товар", "Дата"])
               .agg([
                   pl.col("Остаток").first().alias("Остаток"),
                   pl.col("Цена").first().alias("Цена"),
-                  pl.col("Номенклатура").first().alias("Номенклатура"),
                   pl.col("Номенклатура_канон").first().alias("Номенклатура_канон"),
                   pl.col("Номенклатура_варианты").first().alias("Номенклатура_варианты"),
               ])
               .sort(["Склад", "Артикул_товар", "Дата"])
         )
 
-        # Дельта остатков
+        # Вычисляем изменения остатков
         g = ["Склад", "Артикул_товар"]
         df_daily = df_daily.with_columns(
             pl.col("Остаток").diff().over(g).alias("delta_stock")
         )
 
-        # Продано / Пришло
+        # Продажи, поступления, изменения цен
         df_daily = df_daily.with_columns([
             (-pl.col("delta_stock").clip(upper=0)).fill_null(0).alias("Продано"),
             (pl.col("delta_stock").clip(lower=0)).fill_null(0).alias("Пришло"),
@@ -167,7 +163,7 @@ def load_and_prepare_2025_parquet(file_path: str) -> pl.DataFrame:
             df = df.with_columns(pl.col("Номенклатура").cast(str).str.strip_chars())
 
         if "Дата" in df.columns:
-            df = df.with_columns(pl.col("Дата").str.strptime(pl.Datetime, strict=False))
+            df = df.with_columns(pl.col("Дата").cast(pl.Date))
 
         for col in ["Остаток", "Цена"]:
             if col in df.columns:
@@ -182,7 +178,7 @@ def load_and_prepare_2025_parquet(file_path: str) -> pl.DataFrame:
 
 
 def safe_filter_anomaly(df: pl.DataFrame) -> pl.DataFrame:
-    """Возвращает датафрейм без аномалий, безопасно при любых проблемах."""
+    """Возвращает датафрейм без аномалий (безопасно)."""
     try:
         if df is None or df.is_empty():
             return pl.DataFrame()
@@ -199,12 +195,13 @@ df_2025 = add_canonical_name(df_2025)
 df_2025 = calculate_daily_metrics(df_2025)
 df_2025_clean = safe_filter_anomaly(df_2025)
 
-# Для Dash
+# Для Dash (минимум памяти)
 df_2025_clean_pd = df_2025_clean.collect(streaming=True).to_pandas()
 
-unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist()) if not df_2025_clean.empty else []
-unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].dropna().astype(str).unique().tolist()) if not df_2025_clean.empty and "Артикул_товар" in df_2025_clean.columns else []
-unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].dropna().unique().tolist()) if not df_2025_clean.empty and "Номенклатура_канон" in df_2025_clean.columns else []
+# Уникальные значения для фильтров
+unique_sklads_2025 = sorted(df_2025_clean["Склад"].drop_nulls().unique().to_list()) if not df_2025_clean.is_empty() else []
+unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].drop_nulls().unique().to_list()) if not df_2025_clean.is_empty() and "Артикул_товар" in df_2025_clean.columns else []
+unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].drop_nulls().unique().to_list()) if not df_2025_clean.is_empty() and "Номенклатура_канон" in df_2025_clean.columns else []
 
 # --------------------
 # DASH APP
