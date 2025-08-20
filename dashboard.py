@@ -82,13 +82,13 @@ def add_canonical_name(df: pl.DataFrame) -> pl.DataFrame:
                 (pl.col("Артикул").cast(str) + "|" + pl.col("Номенклатура").cast(str)).alias("Артикул_товар")
             )
 
-        # Мода (берём наиболее частое значение)
+        # Мода (наиболее частое название)
         mode_df = (
             df.group_by(["Склад", "Артикул_товар"])
               .agg(pl.col("Номенклатура").mode().first().alias("Номенклатура_канон"))
         )
 
-        # Все варианты
+        # Все варианты названий
         variants_df = (
             df.group_by(["Склад", "Артикул_товар"])
               .agg(pl.col("Номенклатура").drop_nulls().unique().sort().alias("Номенклатура_варианты"))
@@ -96,7 +96,7 @@ def add_canonical_name(df: pl.DataFrame) -> pl.DataFrame:
             pl.col("Номенклатура_варианты").list.join(", ")
         )
 
-        # Объединяем
+        # Объединение
         df = df.join(mode_df, on=["Склад", "Артикул_товар"], how="left")
         df = df.join(variants_df, on=["Склад", "Артикул_товар"], how="left")
 
@@ -156,6 +156,7 @@ def calculate_daily_metrics(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def load_and_prepare_2025_parquet(file_path: str) -> pl.DataFrame:
+    """Загрузка parquet и базовая подготовка (типы, флаги)."""
     try:
         df = pl.read_parquet(file_path)
 
@@ -198,7 +199,7 @@ df_2025 = add_canonical_name(df_2025)
 df_2025 = calculate_daily_metrics(df_2025)
 df_2025_clean = safe_filter_anomaly(df_2025)
 
-# Если нужно в pandas для Dash:
+# Для Dash
 df_2025_clean_pd = df_2025_clean.collect(streaming=True).to_pandas()
 
 unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist()) if not df_2025_clean.empty else []
