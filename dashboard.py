@@ -195,13 +195,21 @@ df_2025 = add_canonical_name(df_2025)
 df_2025 = calculate_daily_metrics(df_2025)
 df_2025_clean = safe_filter_anomaly(df_2025)
 
-# Для Dash (минимум памяти)
-df_2025_clean_pd = df_2025_clean.collect(streaming=True).to_pandas()
+# Для Dash
+df_2025_clean_pd = df_2025_clean.to_pandas()
 
-# Уникальные значения для фильтров
-unique_sklads_2025 = sorted(df_2025_clean["Склад"].drop_nulls().unique().to_list()) if not df_2025_clean.is_empty() else []
-unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].drop_nulls().unique().to_list()) if not df_2025_clean.is_empty() and "Артикул_товар" in df_2025_clean.columns else []
-unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].drop_nulls().unique().to_list()) if not df_2025_clean.is_empty() and "Номенклатура_канон" in df_2025_clean.columns else []
+unique_sklads_2025 = (
+    sorted(df_2025_clean["Склад"].drop_nans().unique().to_list())
+    if df_2025_clean.shape[0] > 0 and "Склад" in df_2025_clean.columns else []
+)
+unique_articles_2025 = (
+    sorted(df_2025_clean["Артикул_товар"].drop_nans().unique().cast(str).to_list())
+    if df_2025_clean.shape[0] > 0 and "Артикул_товар" in df_2025_clean.columns else []
+)
+unique_noms_2025 = (
+    sorted(df_2025_clean["Номенклатура_канон"].drop_nans().unique().to_list())
+    if df_2025_clean.shape[0] > 0 and "Номенклатура_канон" in df_2025_clean.columns else []
+)
 
 # --------------------
 # DASH APP
