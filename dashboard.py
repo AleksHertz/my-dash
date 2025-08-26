@@ -130,44 +130,51 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return df_daily
 
 
-def load_and_prepare_2025(zip_path: str = "data/aggregated.zip") -> pd.DataFrame:
-    frames = []
+def load_and_prepare_2025_from_url(
+    url: str = "https://github.com/AleksHertz/my-dash/raw/refs/heads/main/data/aggregated.zip"
+) -> pd.DataFrame:
+    # --- Скачиваем архив ---
+    resp = requests.get(url)
+    resp.raise_for_status()
 
-    with zipfile.ZipFile(zip_path, "r") as z:
-        # Берем все csv внутри архива
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+        frames = []
         for name in z.namelist():
-            if name.lower().endswith(".csv"):
-                # Определяем склад по имени папки
-                if "москва" in name.lower():
-                    sklad = "Москва"
-                elif "хабаровск" in name.lower():
-                    sklad = "Хабаровск"
-                else:
-                    continue  # пропускаем неизвестные папки
-
+            if name.endswith(".csv"):
                 with z.open(name) as f:
                     tmp = pd.read_csv(f)
-                    tmp["Склад"] = sklad
+
+                    if "Москва" in name:
+                        tmp["Склад"] = "Москва"
+                    elif "Хабаровск" in name:
+                        tmp["Склад"] = "Хабаровск"
+                    else:
+                        tmp["Склад"] = "Неизвестно"
+
                     frames.append(tmp)
 
+    # --- Собираем единый DataFrame ---
     df = pd.concat(frames, ignore_index=True)
 
-    # Приведение типов
+    # --- Приведение типов ---
     df["Дата"] = pd.to_datetime(df["Дата"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
     df["Артикул"] = df["Артикул"].astype(str).str.strip()
     df["Номенклатура"] = df["Номенклатура"].astype(str).str.strip()
     df["Остаток"] = pd.to_numeric(df["Остаток"], errors="coerce")
     df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce")
 
+    # --- Фильтрация ---
     df = df.dropna(subset=["Дата", "Артикул", "Остаток"]).copy()
 
+    # --- Обработка ---
     df = add_canonical_name(df)
     df = calculate_daily_metrics(df)
+
     return df
 
 
 # --- Загружаем данные ---
-df_2025 = load_and_prepare_2025("data/aggregated.zip")
+df_2025 = load_and_prepare_2025_from_url()
 df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
 
 # --- Уникальные значения для фильтров ---
