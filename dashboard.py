@@ -520,7 +520,7 @@ def update_line_graph(selected_sklads, selected_article, selected_nom):
     Input("sklad-2025-filter", "value")
 )
 def update_top_100_table(selected_sklads):
-    df_filtered = df_2025_clean_pd.copy()  # pandas DataFrame
+    df_filtered = df_2025_clean.copy()  # pandas DataFrame
     if selected_sklads:
         df_filtered = df_filtered[df_filtered["Склад"].isin(selected_sklads)]
 
