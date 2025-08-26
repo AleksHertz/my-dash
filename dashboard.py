@@ -70,147 +70,110 @@ unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()
 
 # --- Функции подготовки данных ---
 
-def add_canonical_name(df: pl.DataFrame) -> pl.DataFrame:
-    """Для каждого (Склад, Артикул) выбираем каноническое название (мода)."""
-    try:
-        if df is None or df.is_empty():
-            return pl.DataFrame()
+def add_canonical_name(df: pd.DataFrame) -> pd.DataFrame:
+    """Для каждого (Склад, Артикул, Номенклатура) выбираем каноническое название номенклатуры (мода)."""
+    df = df.copy()
+    df["Артикул_товар"] = df["Артикул"] + "|" + df["Номенклатура"]
 
-        # Артикул_товар
-        if "Артикул_товар" not in df.columns:
-            df = df.with_columns(
-                (pl.col("Артикул").cast(str) + "|" + pl.col("Номенклатура").cast(str)).alias("Артикул_товар")
-            )
+    mode_map = (
+        df.groupby(["Склад", "Артикул_товар"])["Номенклатура"]
+        .agg(lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iloc[0])
+    )
+    variants_map = (
+        df.groupby(["Склад", "Артикул_товар"])["Номенклатура"]
+        .agg(lambda s: ", ".join(sorted(set(s.dropna()))))
+    )
 
-        # Мода (основное название)
-        mode_df = (
-            df.group_by(["Склад", "Артикул_товар"])
-              .agg(pl.col("Номенклатура").mode().first().alias("Номенклатура_канон"))
-        )
+    idx = df.set_index(["Склад", "Артикул_товар"]).index
+    df["Номенклатура_канон"] = idx.map(mode_map.to_dict())
+    df["Номенклатура_варианты"] = idx.map(variants_map.to_dict())
+    df["Смена_наименования"] = df["Номенклатура"] != df["Номенклатура_канон"]
+    return df
 
-        # Все варианты
-        variants_df = (
-            df.group_by(["Склад", "Артикул_товар"])
-              .agg(pl.col("Номенклатура").drop_nulls().unique().sort().alias("Номенклатура_варианты"))
-              .with_columns(pl.col("Номенклатура_варианты").list.join(", "))
-        )
 
-        # Объединение
-        df = df.join(mode_df, on=["Склад", "Артикул_товар"], how="left")
-        df = df.join(variants_df, on=["Склад", "Артикул_товар"], how="left")
-
-        # Флаг смены названия
-        df = df.with_columns(
-            (pl.col("Номенклатура") != pl.col("Номенклатура_канон")).alias("Смена_наименования")
-        )
-
+def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """Считаем 'Продано' и 'Пришло' по уникальным товарам (Артикул_товар), агрегируем по дате."""
+    if df.empty:
+        for c in ["Продано", "Пришло", "Цена_изменилась", "Аномалия"]:
+            df[c] = pd.Series(dtype=float if c in ["Продано", "Пришло"] else bool)
         return df
-    except Exception:
-        return pl.DataFrame()
+
+    req = ["Склад", "Артикул_товар", "Дата", "Остаток", "Цена"]
+    miss = [c for c in req if c not in df.columns]
+    if miss:
+        raise ValueError(f"Отсутствуют колонки: {miss}")
+
+    df["Дата_только"] = df["Дата"].dt.normalize()
+
+    df_daily = (
+        df.sort_values("Дата")
+        .groupby(["Склад", "Артикул_товар", "Дата_только"], as_index=False)
+        .agg({
+            "Остаток": "first",
+            "Цена": "first",
+            "Номенклатура": "first",
+            "Номенклатура_канон": "first",
+            "Номенклатура_варианты": "first"
+        })
+    )
+    df_daily.rename(columns={"Дата_только": "Дата"}, inplace=True)
+
+    g = df_daily.groupby(["Склад", "Артикул_товар"], group_keys=False)
+    delta_stock = g["Остаток"].diff()
+
+    df_daily["Продано"] = (-delta_stock.clip(upper=0)).fillna(0)
+    df_daily["Пришло"] = (delta_stock.clip(lower=0)).fillna(0)
+    df_daily["Цена_изменилась"] = g["Цена"].diff().fillna(0) != 0
+    same_ost = delta_stock.fillna(0) == 0
+    df_daily["Аномалия"] = ((df_daily["Продано"] > 0) | (df_daily["Пришло"] > 0)) & same_ost
+
+    return df_daily
 
 
-def calculate_daily_metrics(df: pl.DataFrame) -> pl.DataFrame:
-    """Считаем 'Продано' и 'Пришло' по складам и товарам (агрегировано по дате)."""
-    try:
-        if df is None or df.is_empty():
-            return pl.DataFrame()
+def load_and_prepare_2025(zip_path: str = "data/aggregated.zip") -> pd.DataFrame:
+    frames = []
 
-        # Приведение даты
-        if "Дата" in df.columns:
-            df = df.with_columns(pl.col("Дата").cast(pl.Date))
+    with zipfile.ZipFile(zip_path, "r") as z:
+        # Берем все csv внутри архива
+        for name in z.namelist():
+            if name.lower().endswith(".csv"):
+                # Определяем склад по имени папки
+                if "москва" in name.lower():
+                    sklad = "Москва"
+                elif "хабаровск" in name.lower():
+                    sklad = "Хабаровск"
+                else:
+                    continue  # пропускаем неизвестные папки
 
-        # Агрегация по складу, товару, дате
-        df_daily = (
-            df.sort("Дата")
-              .group_by(["Склад", "Артикул_товар", "Дата"])
-              .agg([
-                  pl.col("Остаток").first().alias("Остаток"),
-                  pl.col("Цена").first().alias("Цена"),
-                  pl.col("Номенклатура_канон").first().alias("Номенклатура_канон"),
-                  pl.col("Номенклатура_варианты").first().alias("Номенклатура_варианты"),
-              ])
-              .sort(["Склад", "Артикул_товар", "Дата"])
-        )
+                with z.open(name) as f:
+                    tmp = pd.read_csv(f)
+                    tmp["Склад"] = sklad
+                    frames.append(tmp)
 
-        # Вычисляем изменения остатков
-        g = ["Склад", "Артикул_товар"]
-        df_daily = df_daily.with_columns(
-            pl.col("Остаток").diff().over(g).alias("delta_stock")
-        )
+    df = pd.concat(frames, ignore_index=True)
 
-        # Продажи, поступления, изменения цен
-        df_daily = df_daily.with_columns([
-            (-pl.col("delta_stock").clip(upper=0)).fill_null(0).alias("Продано"),
-            (pl.col("delta_stock").clip(lower=0)).fill_null(0).alias("Пришло"),
-            (pl.col("Цена").diff().over(g).fill_null(0) != 0).alias("Цена_изменилась"),
-            (((pl.col("Продано") > 0) | (pl.col("Пришло") > 0)) & (pl.col("delta_stock").fill_null(0) == 0)).alias("Аномалия"),
-        ])
+    # Приведение типов
+    df["Дата"] = pd.to_datetime(df["Дата"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
+    df["Артикул"] = df["Артикул"].astype(str).str.strip()
+    df["Номенклатура"] = df["Номенклатура"].astype(str).str.strip()
+    df["Остаток"] = pd.to_numeric(df["Остаток"], errors="coerce")
+    df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce")
 
-        return df_daily
-    except Exception:
-        return pl.DataFrame()
+    df = df.dropna(subset=["Дата", "Артикул", "Остаток"]).copy()
+
+    df = add_canonical_name(df)
+    df = calculate_daily_metrics(df)
+    return df
 
 
-def load_and_prepare_2025_parquet(file_path: str) -> pl.DataFrame:
-    """Загрузка parquet и базовая подготовка (типы, флаги)."""
-    try:
-        df = pl.read_parquet(file_path)
+# --- Загружаем данные ---
+df_2025 = load_and_prepare_2025("data/aggregated.zip")
+df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
 
-        # Приведение типов
-        if "Артикул" in df.columns:
-            df = df.with_columns(pl.col("Артикул").cast(str).str.strip_chars())
-        if "Номенклатура" in df.columns:
-            df = df.with_columns(pl.col("Номенклатура").cast(str).str.strip_chars())
-
-        if "Дата" in df.columns:
-            df = df.with_columns(pl.col("Дата").cast(pl.Date))
-
-        for col in ["Остаток", "Цена"]:
-            if col in df.columns:
-                df = df.with_columns(pl.col(col).cast(pl.Float64))
-
-        if "Аномалия" not in df.columns:
-            df = df.with_columns(pl.lit(False).alias("Аномалия"))
-
-        return df
-    except Exception:
-        return pl.DataFrame()
-
-
-def safe_filter_anomaly(df: pl.DataFrame) -> pl.DataFrame:
-    """Возвращает датафрейм без аномалий (безопасно)."""
-    try:
-        if df is None or df.is_empty():
-            return pl.DataFrame()
-        if "Аномалия" not in df.columns:
-            return df
-        return df.filter(~pl.col("Аномалия"))
-    except Exception:
-        return pl.DataFrame()
-
-
-# --- Использование ---
-df_2025 = load_and_prepare_2025_parquet("data/itog.parquet")
-df_2025 = add_canonical_name(df_2025)
-df_2025 = calculate_daily_metrics(df_2025)
-df_2025_clean = safe_filter_anomaly(df_2025)
-
-# Для Dash
-df_2025_clean_pd = df_2025_clean.to_pandas()
-
-unique_sklads_2025 = (
-    sorted(df_2025_clean["Склад"].drop_nans().unique().to_list())
-    if df_2025_clean.shape[0] > 0 and "Склад" in df_2025_clean.columns else []
-)
-unique_articles_2025 = (
-    sorted(df_2025_clean["Артикул_товар"].drop_nans().unique().cast(str).to_list())
-    if df_2025_clean.shape[0] > 0 and "Артикул_товар" in df_2025_clean.columns else []
-)
-unique_noms_2025 = (
-    sorted(df_2025_clean["Номенклатура_канон"].drop_nans().unique().to_list())
-    if df_2025_clean.shape[0] > 0 and "Номенклатура_канон" in df_2025_clean.columns else []
-)
-
+# --- Уникальные значения для фильтров ---
+unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist())
+unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].dropna().astype(str).unique().tolist())
+unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].dropna().unique().tolist())
 # --------------------
 # DASH APP
 # --------------------
