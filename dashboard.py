@@ -545,13 +545,12 @@ def update_line_graph(selected_sklads, selected_article, selected_nom):
     return fig
 
 # ------------------- Таблица топ-100 -------------------
-# ------------------- Таблица ТОП-100 -------------------
 @app.callback(
     Output("top-100-table", "data"),
     Input("sklad-2025-filter", "value")
 )
 def update_top_100_table(selected_sklads):
-    df_filtered = df_2025.copy()
+    df_filtered = df_2025_clean_pd.copy()  # pandas DataFrame
     if selected_sklads:
         df_filtered = df_filtered[df_filtered["Склад"].isin(selected_sklads)]
 
@@ -573,7 +572,7 @@ def update_top_100_table(selected_sklads):
 
     return top_100.to_dict("records")
 
-# ------------------- Выбор из таблицы -------------------
+
 # ------------------- Выбор из таблицы -------------------
 @app.callback(
     Output("article-2025-filter", "value"),
@@ -582,7 +581,7 @@ def update_top_100_table(selected_sklads):
     State("top-100-table", "data")
 )
 def select_from_table(selected_rows, table_data):
-    if selected_rows:
+    if selected_rows and table_data:
         row = table_data[selected_rows[0]]
         return row["Артикул"], row["Номенклатура"]
     return None, None
