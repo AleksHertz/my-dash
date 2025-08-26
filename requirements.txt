@@ -7,4 +7,5 @@ gunicorn
 dash-bootstrap-components
 pyarrow
 polars
-zipfile
+
+
