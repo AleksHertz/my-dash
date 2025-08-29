@@ -13,6 +13,13 @@ import numpy as np
 import xlsxwriter
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
+import zipfile
+import requests
+from io import BytesIO
+import pyarrow
+import pyarrow.parquet as pq
+import polars as pl
+import traceback
 # --------------------
 # НАСТРОЙКИ
 # --------------------
@@ -65,7 +72,6 @@ unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()
 
 def add_canonical_name(df: pd.DataFrame) -> pd.DataFrame:
     """Для каждого (Склад, Артикул, Номенклатура) выбираем каноническое название номенклатуры (мода)."""
-    # Уникальные комбинации Артикул + Номенклатура
     df = df.copy()
     df["Артикул_товар"] = df["Артикул"] + "|" + df["Номенклатура"]
 
@@ -99,7 +105,6 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     df["Дата_только"] = df["Дата"].dt.normalize()
 
-    # Агрегируем по уникальному товару (Склад + Артикул_товар) и дате
     df_daily = (
         df.sort_values("Дата")
         .groupby(["Склад", "Артикул_товар", "Дата_только"], as_index=False)
@@ -125,37 +130,57 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return df_daily
 
 
-def load_and_prepare_2025(base_path: str = "data/агрегированные") -> pd.DataFrame:
-    frames = []
-    for sklad in ("москва", "хабаровск"):
-        for f in glob.glob(os.path.join(base_path, sklad, "*.csv")):
-            tmp = pd.read_csv(f)
-            tmp["Склад"] = sklad.capitalize()
-            frames.append(tmp)
+def load_and_prepare_2025_from_url(
+    url: str = "https://github.com/AleksHertz/my-dash/raw/refs/heads/main/data/aggregated.zip"
+) -> pd.DataFrame:
+    # --- Скачиваем архив ---
+    resp = requests.get(url)
+    resp.raise_for_status()
+
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+        frames = []
+        for name in z.namelist():
+            if name.endswith(".csv"):
+                with z.open(name) as f:
+                    tmp = pd.read_csv(f)
+
+                    if "Москва" in name:
+                        tmp["Склад"] = "Москва"
+                    elif "Хабаровск" in name:
+                        tmp["Склад"] = "Хабаровск"
+                    else:
+                        tmp["Склад"] = "Неизвестно"
+
+                    frames.append(tmp)
+
+    # --- Собираем единый DataFrame ---
     df = pd.concat(frames, ignore_index=True)
 
+    # --- Приведение типов ---
     df["Дата"] = pd.to_datetime(df["Дата"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
     df["Артикул"] = df["Артикул"].astype(str).str.strip()
     df["Номенклатура"] = df["Номенклатура"].astype(str).str.strip()
     df["Остаток"] = pd.to_numeric(df["Остаток"], errors="coerce")
     df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce")
 
+    # --- Фильтрация ---
     df = df.dropna(subset=["Дата", "Артикул", "Остаток"]).copy()
 
+    # --- Обработка ---
     df = add_canonical_name(df)
     df = calculate_daily_metrics(df)
+
     return df
 
 
 # --- Загружаем данные ---
-df_2025 = load_and_prepare_2025("data/агрегированные")
+df_2025 = load_and_prepare_2025_from_url()
 df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
 
 # --- Уникальные значения для фильтров ---
 unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist())
 unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].dropna().astype(str).unique().tolist())
 unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].dropna().unique().tolist())
-
 # --------------------
 # DASH APP
 # --------------------
@@ -490,13 +515,12 @@ def update_line_graph(selected_sklads, selected_article, selected_nom):
     return fig
 
 # ------------------- Таблица топ-100 -------------------
-# ------------------- Таблица ТОП-100 -------------------
 @app.callback(
     Output("top-100-table", "data"),
     Input("sklad-2025-filter", "value")
 )
 def update_top_100_table(selected_sklads):
-    df_filtered = df_2025.copy()
+    df_filtered = df_2025_clean.copy()  # pandas DataFrame
     if selected_sklads:
         df_filtered = df_filtered[df_filtered["Склад"].isin(selected_sklads)]
 
@@ -518,7 +542,7 @@ def update_top_100_table(selected_sklads):
 
     return top_100.to_dict("records")
 
-# ------------------- Выбор из таблицы -------------------
+
 # ------------------- Выбор из таблицы -------------------
 @app.callback(
     Output("article-2025-filter", "value"),
@@ -527,7 +551,7 @@ def update_top_100_table(selected_sklads):
     State("top-100-table", "data")
 )
 def select_from_table(selected_rows, table_data):
-    if selected_rows:
+    if selected_rows and table_data:
         row = table_data[selected_rows[0]]
         return row["Артикул"], row["Номенклатура"]
     return None, None
