@@ -248,7 +248,8 @@ app.layout = html.Div([
 
                 dcc.Download(id="download-top-fast"),
                 dcc.Download(id="download-top-restock"),
-            ], style={'marginBottom': 40}),]
+           ], style={'marginBottom': 40}),
+        ])
 
             # ===================== Блок ВСПЛЕСКИ =====================
             html.Div([
