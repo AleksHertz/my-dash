@@ -610,7 +610,7 @@ def update_line_graph(selected_article, selected_nom, selected_sklads):
     )
     return fig
 
-# ------------------- Колбэк для заполнения таблицы ТОП-100 -------------------
+# ------------------- Таблица топ-100 -------------------
 @app.callback(
     Output("top-100-table", "data"),
     Input("sklad-2025-filter", "value")
@@ -618,29 +618,30 @@ def update_line_graph(selected_article, selected_nom, selected_sklads):
 def update_top_100_table(selected_sklads):
     dff = df_2025_clean.copy()
 
-    # Фильтруем по выбранным складам
+    # Фильтр по складам
     if selected_sklads:
         dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
 
     if dff.empty:
         return []
 
-    # Считаем продажи
-    dff["Продано_fix"] = (dff["Остаток"].shift(1) - dff["Остаток"]).clip(lower=0).fillna(0)
-
-    # Группируем по товару и складу
+    # Группировка по артикулу + номенклатуре + складу
     top_df = (
         dff.groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)
-           .agg({"Продано_fix": "sum"})
-           .rename(columns={"Артикул_товар": "Артикул",
-                            "Номенклатура_канон": "Номенклатура",
-                            "Продано_fix": "Продано"})
+           .agg({"Продано": "sum"})  # ✅ используем готовую колонку
            .sort_values("Продано", ascending=False)
            .head(100)
     )
 
-    return top_df.to_dict("records")
+    # Переименовываем для таблицы
+    top_df = top_df.rename(
+        columns={
+            "Артикул_товар": "Артикул",
+            "Номенклатура_канон": "Номенклатура",
+        }
+    )
 
+    return top_df.to_dict("records")
 
 # ------------------- Колбэк выбора товара из таблицы -------------------
 @app.callback(
