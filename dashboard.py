@@ -479,13 +479,23 @@ def load_aggregated_2025_from_local(folder="tmp_aggregated") -> pd.DataFrame:
 
     if not frames:
         return pd.DataFrame()
+
     df = pd.concat(frames, ignore_index=True)
 
-    # Обработка
-    df = add_canonical_name(df)
-    df = calculate_daily_metrics(df)
-    return df
+    # --- Проверяем наличие колонки Остаток ---
+    if "Остаток" not in df.columns:
+        if "Количество" in df.columns:
+            df["Остаток"] = df["Количество"]
+        else:
+            raise ValueError("В данных отсутствуют колонки 'Остаток' и 'Количество'")
 
+    # --- Приведение к каноническому виду ---
+    df = add_canonical_name(df)
+
+    # --- Расчёт ежедневных метрик ---
+    df = calculate_daily_metrics(df)
+
+    return df
 
 # --- Колбэк загрузки нового файла ---
 @app.callback(
