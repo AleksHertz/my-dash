@@ -82,8 +82,8 @@ def process_new_file(file_path, output_folder="tmp_aggregated", repo_path="."):
     if df_new is None or df_new.empty:
         return 0
 
-    # приводим даты к нормальному виду сразу
-    df_new["Дата"] = pd.to_datetime(df_new["Дата"], errors="coerce")
+    # приводим даты к дате без времени
+    df_new["Дата"] = pd.to_datetime(df_new["Дата"], errors="coerce").dt.date
     df_new = df_new.dropna(subset=["Дата", "Артикул", "Склад"])
 
     added_rows = 0
@@ -94,7 +94,7 @@ def process_new_file(file_path, output_folder="tmp_aggregated", repo_path="."):
 
         if os.path.exists(out_file):
             df_old = pd.read_csv(out_file)
-            df_old["Дата"] = pd.to_datetime(df_old["Дата"], errors="coerce")
+            df_old["Дата"] = pd.to_datetime(df_old["Дата"], errors="coerce").dt.date
 
             # исключаем уже существующие даты
             group = group[~group["Дата"].isin(df_old["Дата"])]
@@ -103,7 +103,7 @@ def process_new_file(file_path, output_folder="tmp_aggregated", repo_path="."):
                 group.to_csv(out_file, mode="a", header=False, index=False, encoding="utf-8-sig")
                 added_rows += len(group)
         else:
-            # на всякий случай убираем дубли внутри группы
+            # убираем дубли внутри группы
             group = group.drop_duplicates(subset=["Дата", "Артикул", "Склад"])
             group.to_csv(out_file, index=False, encoding="utf-8-sig")
             added_rows += len(group)
@@ -112,7 +112,6 @@ def process_new_file(file_path, output_folder="tmp_aggregated", repo_path="."):
         git_autocommit(repo_path, file_path, added_rows)
 
     return added_rows
-
 # === Автокоммит ===
 def git_autocommit(repo_path, file_path, added_rows):
     """
