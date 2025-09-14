@@ -76,15 +76,16 @@ def read_excel_file(file_path, sklad_name="auto"):
 def process_new_file(file_path, output_folder="tmp_aggregated", repo_path="."):
     """
     Обрабатывает загруженный Excel-файл, сохраняет CSV и делает автокоммит в репозиторий GitHub.
-    Защита от дублей: строки с датами, которые уже есть в архиве, не добавляются.
     """
     df_new = read_excel_file(file_path, sklad_name="auto")
-    if df_new is None or df_new.empty:
-        return 0
 
-    # приводим даты к дате без времени
-    df_new["Дата"] = pd.to_datetime(df_new["Дата"], errors="coerce").dt.date
-    df_new = df_new.dropna(subset=["Дата", "Артикул", "Склад"])
+    if df_new is None or df_new.empty:
+        return 0, "Файл пуст или не содержит обязательных колонок"
+
+    # --- Убедимся, что все обязательные колонки есть ---
+    for col in ["Артикул", "Номенклатура", "Остаток", "Цена"]:
+        if col not in df_new.columns:
+            return 0, f"В файле отсутствует обязательная колонка: {col}"
 
     added_rows = 0
     for (sklad, article), group in df_new.groupby(["Склад", "Артикул"]):
@@ -94,24 +95,25 @@ def process_new_file(file_path, output_folder="tmp_aggregated", repo_path="."):
 
         if os.path.exists(out_file):
             df_old = pd.read_csv(out_file)
-            df_old["Дата"] = pd.to_datetime(df_old["Дата"], errors="coerce").dt.date
-
-            # исключаем уже существующие даты
-            group = group[~group["Дата"].isin(df_old["Дата"])]
+            if "Дата" not in df_old.columns:
+                continue
+            max_date = pd.to_datetime(df_old["Дата"]).max()
+            group = group[pd.to_datetime(group["Дата"]) > max_date]
 
             if not group.empty:
                 group.to_csv(out_file, mode="a", header=False, index=False, encoding="utf-8-sig")
                 added_rows += len(group)
         else:
-            # убираем дубли внутри группы
-            group = group.drop_duplicates(subset=["Дата", "Артикул", "Склад"])
             group.to_csv(out_file, index=False, encoding="utf-8-sig")
             added_rows += len(group)
 
     if added_rows > 0:
-        git_autocommit(repo_path, file_path, added_rows)
+        try:
+            git_autocommit(repo_path, file_path, added_rows)
+        except Exception as e:
+            return added_rows, f"Данные добавлены, но ошибка автокоммита: {e}"
 
-    return added_rows
+    return added_rows, None
 # === Автокоммит ===
 def git_autocommit(repo_path, file_path, added_rows):
     """
