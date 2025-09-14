@@ -518,28 +518,33 @@ def upload_2025_file(contents, filename):
 # ------------------- Колбэк графика -------------------
 @app.callback(
     Output("graph-2025-line", "figure"),
-    Input("sklad-2025-filter", "value"),
     Input("article-2025-filter", "value"),
     Input("nom-2025-filter", "value"),
-    Input("month-2025-filter", "value")
+    Input("sklad-2025-filter", "value")
 )
-def update_line_graph(selected_sklads, selected_article, selected_nom, selected_month):
+def update_line_graph(selected_article, selected_nom, selected_sklads):
+    # Если товар не выбран, возвращаем пустой график с подсказкой
+    if not selected_article or not selected_nom:
+        return go.Figure(
+            layout=go.Layout(
+                title="Выберите товар из таблицы ТОП-100 для отображения графика",
+                xaxis_title="Дата",
+                yaxis_title="Остаток"
+            )
+        )
+
     dff = df_2025_clean.copy()
 
     # Фильтры
     if selected_sklads:
         dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
-    if selected_article:
-        dff = dff[dff["Артикул_товар"].astype(str) == str(selected_article)]
-    if selected_nom:
-        dff = dff[dff["Номенклатура_канон"] == selected_nom]
-    if selected_month:
-        dff = dff[dff["Дата"].dt.month == selected_month]
+    dff = dff[(dff["Артикул_товар"].astype(str) == str(selected_article)) &
+              (dff["Номенклатура_канон"] == selected_nom)]
 
     if dff.empty:
         return go.Figure(
             layout=go.Layout(
-                title="Нет данных для выбранных фильтров",
+                title="Нет данных для выбранного товара",
                 xaxis_title="Дата",
                 yaxis_title="Остаток"
             )
@@ -553,23 +558,18 @@ def update_line_graph(selected_sklads, selected_article, selected_nom, selected_
         df_s["Среднее_Продано"] = df_s["Продано_fix"].rolling(7, min_periods=1).mean()
         df_s["Всплеск"] = df_s["Продано_fix"] > 1.5 * df_s["Среднее_Продано"]
         df_s["Цена_изменилась"] = df_s["Цена"].diff().fillna(0) != 0
-
-        # Цвет и размер с проверкой на NaN и преобразованием в список
-        df_s["Цвет"] = df_s.apply(
-            lambda row: "purple" if row["Всплеск"] and row["Цена_изменилась"]
-                        else "red" if row["Всплеск"]
-                        else "orange" if row["Цена_изменилась"]
-                        else "blue",
-            axis=1
-        ).fillna("blue")
-        df_s["Размер"] = df_s["Всплеск"].apply(lambda x: 10 if x else 5).fillna(5)
+        df_s["Цвет"] = df_s.apply(lambda row: "purple" if row["Всплеск"] and row["Цена_изменилась"]
+                                   else "red" if row["Всплеск"]
+                                   else "orange" if row["Цена_изменилась"]
+                                   else "blue", axis=1)
+        df_s["Размер"] = df_s["Всплеск"].apply(lambda x: 10 if x else 5)
 
         fig.add_trace(go.Scatter(
             x=df_s["Дата"],
             y=df_s["Остаток"],
             mode="lines+markers",
             name=str(sklad),
-            marker=dict(size=df_s["Размер"].tolist(), color=df_s["Цвет"].tolist()),
+            marker=dict(size=df_s["Размер"], color=df_s["Цвет"]),
             text=[sklad]*len(df_s),
             customdata=df_s[[
                 "Продано_fix", "Пополнено_fix", "Цена",
@@ -598,11 +598,8 @@ def update_line_graph(selected_sklads, selected_article, selected_nom, selected_
         "Обычный день": "blue"
     }
     for label, color in legend_colors.items():
-        fig.add_trace(go.Scatter(
-            x=[None], y=[None], mode="markers",
-            marker=dict(size=8, color=color),
-            name=label
-        ))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers",
+                                 marker=dict(size=8, color=color), name=label))
 
     fig.update_layout(
         title="Динамика остатков, продаж и цен (2025)",
@@ -613,27 +610,17 @@ def update_line_graph(selected_sklads, selected_article, selected_nom, selected_
     )
     return fig
 
-
-# ------------------- Колбэк таблицы ТОП-100 -------------------
+# ------------------- Колбэк для заполнения таблицы ТОП-100 -------------------
 @app.callback(
     Output("top-100-table", "data"),
-    Input("sklad-2025-filter", "value"),
-    Input("article-2025-filter", "value"),
-    Input("nom-2025-filter", "value"),
-    Input("month-2025-filter", "value")
+    Input("sklad-2025-filter", "value")
 )
-def update_top_100_table(selected_sklads, selected_article, selected_nom, selected_month):
+def update_top_100_table(selected_sklads):
     dff = df_2025_clean.copy()
 
-    # Применяем фильтры
+    # Фильтруем по выбранным складам
     if selected_sklads:
         dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
-    if selected_article:
-        dff = dff[dff["Артикул_товар"].astype(str) == str(selected_article)]
-    if selected_nom:
-        dff = dff[dff["Номенклатура_канон"] == selected_nom]
-    if selected_month:
-        dff = dff[dff["Дата"].dt.month == selected_month]
 
     if dff.empty:
         return []
@@ -645,15 +632,17 @@ def update_top_100_table(selected_sklads, selected_article, selected_nom, select
     top_df = (
         dff.groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)
            .agg({"Продано_fix": "sum"})
-           .rename(columns={"Продано_fix": "Продано"})
+           .rename(columns={"Артикул_товар": "Артикул",
+                            "Номенклатура_канон": "Номенклатура",
+                            "Продано_fix": "Продано"})
            .sort_values("Продано", ascending=False)
            .head(100)
     )
 
-    # Преобразуем к списку словарей для DataTable
     return top_df.to_dict("records")
 
-# ------------------- Выбор из таблицы -------------------
+
+# ------------------- Колбэк выбора товара из таблицы -------------------
 @app.callback(
     Output("article-2025-filter", "value"),
     Output("nom-2025-filter", "value"),
@@ -664,9 +653,9 @@ def update_top_100_table(selected_sklads, selected_article, selected_nom, select
 def select_from_table(selected_rows, table_data):
     if selected_rows and table_data:
         row = table_data[selected_rows[0]]
+        # Сбрасываем месяц при выборе из таблицы
         return row["Артикул"], row["Номенклатура"], None
     return None, None, None
-
 # --- Выгрузка топ-ходовых ---
 
 def format_excel(dff, writer, sheet_name):
