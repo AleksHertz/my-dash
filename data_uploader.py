@@ -73,7 +73,10 @@ def read_excel_file(file_path, sklad_name="auto"):
     return df
 
 # === Обработка новых файлов ===
-def process_new_file(file_path, output_folder="data/агрегированные", repo_path="."):
+def process_new_file(file_path, output_folder="tmp_aggregated", repo_path="."):
+    """
+    Обрабатывает загруженный Excel-файл, сохраняет CSV и делает автокоммит в репозиторий GitHub.
+    """
     df_new = read_excel_file(file_path, sklad_name="auto")
     if df_new is None or df_new.empty:
         return 0
@@ -101,33 +104,14 @@ def process_new_file(file_path, output_folder="data/агрегированные
 
     return added_rows
 
-# === Удаление последней даты ===
-def delete_last_records(output_folder="data/агрегированные"):
-    removed = 0
-    for sklad in os.listdir(output_folder):
-        folder = os.path.join(output_folder, sklad)
-        if not os.path.isdir(folder):
-            continue
-
-        for f in os.listdir(folder):
-            file_path = os.path.join(folder, f)
-            df = pd.read_csv(file_path)
-            if df.empty:
-                continue
-
-            max_date = pd.to_datetime(df["Дата"]).max()
-            df_new = df[pd.to_datetime(df["Дата"]) < max_date]
-
-            removed += len(df) - len(df_new)
-            df_new.to_csv(file_path, index=False, encoding="utf-8-sig")
-
-    return removed
-
 # === Автокоммит ===
 def git_autocommit(repo_path, file_path, added_rows):
+    """
+    Делает git add, commit и push в указанный репозиторий.
+    """
     try:
         repo = Repo(repo_path)
-        repo.git.add(A=True)  # добавляем все изменения
+        repo.git.add(A=True)
         commit_msg = f"Автодобавление новых данных: {os.path.basename(file_path)}, строк {added_rows}"
         repo.index.commit(commit_msg)
         origin = repo.remote(name="origin")
