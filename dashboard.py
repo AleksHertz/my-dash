@@ -497,16 +497,21 @@ def upload_2025_file(contents, filename):
     if contents is None:
         return "Файл не загружен"
 
-    # --- Сохраняем загруженный файл ---
-    file_path = save_uploaded_file(contents, filename)
+    # --- Декодируем и сохраняем файл ---
+    content_type, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
+    tmp_path = os.path.join("tmp_uploaded", filename)
+    os.makedirs("tmp_uploaded", exist_ok=True)
+    with open(tmp_path, "wb") as f:
+        f.write(decoded)
 
     # --- Обработка нового файла ---
-    added_rows = process_new_file(file_path)
+    added_rows = process_new_file(tmp_path)
 
     # --- Перезагружаем все данные ---
     df_2025 = load_and_prepare_2025_from_url()
 
-    # 🔧 Добавляем защиту и пересчёт
+    # 🔧 Пересчёт метрик
     df_2025 = add_canonical_name(df_2025)
     df_2025 = calculate_daily_metrics(df_2025)
 
