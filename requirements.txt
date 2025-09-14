@@ -7,5 +7,6 @@ gunicorn
 dash-bootstrap-components
 pyarrow
 polars
+gitpython
 
 
