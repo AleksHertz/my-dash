@@ -8,5 +8,6 @@ dash-bootstrap-components
 pyarrow
 polars
 gitpython
+xlrd
 
 
