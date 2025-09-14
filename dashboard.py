@@ -553,18 +553,23 @@ def update_line_graph(selected_sklads, selected_article, selected_nom, selected_
         df_s["Среднее_Продано"] = df_s["Продано_fix"].rolling(7, min_periods=1).mean()
         df_s["Всплеск"] = df_s["Продано_fix"] > 1.5 * df_s["Среднее_Продано"]
         df_s["Цена_изменилась"] = df_s["Цена"].diff().fillna(0) != 0
-        df_s["Цвет"] = df_s.apply(lambda row: "purple" if row["Всплеск"] and row["Цена_изменилась"]
-                                   else "red" if row["Всплеск"]
-                                   else "orange" if row["Цена_изменилась"]
-                                   else "blue", axis=1)
-        df_s["Размер"] = df_s["Всплеск"].apply(lambda x: 10 if x else 5)
+
+        # Цвет и размер с проверкой на NaN и преобразованием в список
+        df_s["Цвет"] = df_s.apply(
+            lambda row: "purple" if row["Всплеск"] and row["Цена_изменилась"]
+                        else "red" if row["Всплеск"]
+                        else "orange" if row["Цена_изменилась"]
+                        else "blue",
+            axis=1
+        ).fillna("blue")
+        df_s["Размер"] = df_s["Всплеск"].apply(lambda x: 10 if x else 5).fillna(5)
 
         fig.add_trace(go.Scatter(
             x=df_s["Дата"],
             y=df_s["Остаток"],
             mode="lines+markers",
             name=str(sklad),
-            marker=dict(size=df_s["Размер"], color=df_s["Цвет"]),
+            marker=dict(size=df_s["Размер"].tolist(), color=df_s["Цвет"].tolist()),
             text=[sklad]*len(df_s),
             customdata=df_s[[
                 "Продано_fix", "Пополнено_fix", "Цена",
@@ -593,8 +598,11 @@ def update_line_graph(selected_sklads, selected_article, selected_nom, selected_
         "Обычный день": "blue"
     }
     for label, color in legend_colors.items():
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers",
-                                 marker=dict(size=8, color=color), name=label))
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=8, color=color),
+            name=label
+        ))
 
     fig.update_layout(
         title="Динамика остатков, продаж и цен (2025)",
@@ -605,29 +613,45 @@ def update_line_graph(selected_sklads, selected_article, selected_nom, selected_
     )
     return fig
 
-# ------------------- Колбэк таблицы -------------------
+
+# ------------------- Колбэк таблицы ТОП-100 -------------------
 @app.callback(
     Output("top-100-table", "data"),
-    Input("sklad-2025-filter", "value")
+    Input("sklad-2025-filter", "value"),
+    Input("article-2025-filter", "value"),
+    Input("nom-2025-filter", "value"),
+    Input("month-2025-filter", "value")
 )
-def update_top_100_table(selected_sklads):
+def update_top_100_table(selected_sklads, selected_article, selected_nom, selected_month):
     dff = df_2025_clean.copy()
-    if selected_sklads:
-        dff = dff[dff["Склад"].isin(selected_sklads)]
 
-    top_100 = (
-        dff.groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)["Продано"]
-        .sum()
-        .sort_values("Продано", ascending=False)
-        .head(100)
-        .rename(columns={
-            "Артикул_товар": "Артикул",
-            "Номенклатура_канон": "Номенклатура"
-        })
+    # Применяем фильтры
+    if selected_sklads:
+        dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
+    if selected_article:
+        dff = dff[dff["Артикул_товар"].astype(str) == str(selected_article)]
+    if selected_nom:
+        dff = dff[dff["Номенклатура_канон"] == selected_nom]
+    if selected_month:
+        dff = dff[dff["Дата"].dt.month == selected_month]
+
+    if dff.empty:
+        return []
+
+    # Считаем продажи
+    dff["Продано_fix"] = (dff["Остаток"].shift(1) - dff["Остаток"]).clip(lower=0).fillna(0)
+
+    # Группируем по товару и складу
+    top_df = (
+        dff.groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)
+           .agg({"Продано_fix": "sum"})
+           .rename(columns={"Продано_fix": "Продано"})
+           .sort_values("Продано", ascending=False)
+           .head(100)
     )
 
-    return top_100.to_dict("records")
-
+    # Преобразуем к списку словарей для DataTable
+    return top_df.to_dict("records")
 
 # ------------------- Выбор из таблицы -------------------
 @app.callback(
