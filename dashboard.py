@@ -480,63 +480,55 @@ def load_aggregated_2025_from_local(folder="tmp_aggregated") -> pd.DataFrame:
     return df
 
 
+# --- Колбэк загрузки нового файла ---
 @app.callback(
     Output("upload-status", "children"),
-    Output("graph-2025-line", "figure"),
-    Output("top-100-table", "data"),
+    Output("sklad-2025-filter", "options"),
+    Output("article-2025-filter", "options"),
+    Output("nom-2025-filter", "options"),
     Input("upload-data", "contents"),
-    State("upload-data", "filename"),
-    State("sklad-2025-filter", "value")
+    State("upload-data", "filename")
 )
-def upload_new_file(contents, filename, selected_sklads):
+def upload_2025_file(contents, filename):
     if contents is None:
-        raise PreventUpdate
+        raise dash.exceptions.PreventUpdate
 
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
 
-    # Сохраняем временно файл
-    tmp_path = os.path.join("tmp", filename)
-    os.makedirs("tmp", exist_ok=True)
+    tmp_path = os.path.join("tmp_uploaded", filename)
+    os.makedirs("tmp_uploaded", exist_ok=True)
     with open(tmp_path, "wb") as f:
         f.write(decoded)
 
-    # Обработка нового файла и добавление в архив
-    added_rows = process_new_file(tmp_path, output_folder="tmp_aggregated", repo_path=".")
+    added_rows = process_new_file(tmp_path)
 
-    # Перезагрузка df_2025_clean после добавления новых данных
+    if added_rows == 0:
+        return "Файл обработан, но новых данных не найдено", dash.no_update, dash.no_update, dash.no_update
+
     global df_2025_clean
-    df_2025_clean = load_and_prepare_2025_from_url()  # или загрузка из локальной папки
+    df_2025 = load_and_prepare_2025_from_url()
+    df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
 
-    # Обновление графика и таблицы
-    fig = update_line_graph(selected_sklads, None, None, None)
-    top100 = update_top_100_table(selected_sklads)
+    sklads_options = [{'label': s, 'value': s} for s in sorted(df_2025_clean['Склад'].unique())]
+    articles_options = [{'label': a, 'value': a} for a in sorted(df_2025_clean['Артикул_товар'].unique())]
+    noms_options = [{'label': n, 'value': n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
 
-    status = f"Файл '{filename}' загружен, добавлено {added_rows} новых строк."
-    return status, fig, top100
-# ------------------- График остатков -------------------
-@app.callback( 
+    return f"Файл {filename} успешно добавлен: {added_rows} строк", sklads_options, articles_options, noms_options
+# ------------------- Колбэк графика -------------------
+@app.callback(
     Output("graph-2025-line", "figure"),
     Input("sklad-2025-filter", "value"),
     Input("article-2025-filter", "value"),
     Input("nom-2025-filter", "value"),
-    Input("month-2025-filter", "value"),
+    Input("month-2025-filter", "value")
 )
 def update_line_graph(selected_sklads, selected_article, selected_nom, selected_month):
-    if not selected_article and not selected_nom:
-        return go.Figure(
-            layout=go.Layout(
-                title="Выберите артикул или номенклатуру (и, при необходимости, склад/месяц)",
-                xaxis_title="Дата",
-                yaxis_title="Остаток"
-            )
-        )
-
     dff = df_2025_clean.copy()
 
+    # Фильтры
     if selected_sklads:
-        sklads = _to_list(selected_sklads)
-        dff = dff[dff["Склад"].isin(sklads)]
+        dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
     if selected_article:
         dff = dff[dff["Артикул_товар"].astype(str) == str(selected_article)]
     if selected_nom:
@@ -554,27 +546,17 @@ def update_line_graph(selected_sklads, selected_article, selected_nom, selected_
         )
 
     fig = go.Figure()
-
     for sklad in dff["Склад"].unique():
         df_s = dff[dff["Склад"] == sklad].sort_values("Дата").copy()
-
-        # Расчёт Продано и Пополнено
         df_s["Продано_fix"] = (df_s["Остаток"].shift(1) - df_s["Остаток"]).clip(lower=0).fillna(0)
         df_s["Пополнено_fix"] = (df_s["Остаток"] - df_s["Остаток"].shift(1)).clip(lower=0).fillna(0)
-
-        # Скользящее среднее и всплески
-        df_s["Среднее_Продано"] = df_s["Продано_fix"].rolling(window=7, min_periods=1).mean()
+        df_s["Среднее_Продано"] = df_s["Продано_fix"].rolling(7, min_periods=1).mean()
         df_s["Всплеск"] = df_s["Продано_fix"] > 1.5 * df_s["Среднее_Продано"]
         df_s["Цена_изменилась"] = df_s["Цена"].diff().fillna(0) != 0
-
-        # Цвет и размер точек
-        df_s["Цвет"] = df_s.apply(
-            lambda row: "purple" if row["Всплеск"] and row["Цена_изменилась"]
-                        else "red" if row["Всплеск"]
-                        else "orange" if row["Цена_изменилась"]
-                        else "blue",
-            axis=1
-        )
+        df_s["Цвет"] = df_s.apply(lambda row: "purple" if row["Всплеск"] and row["Цена_изменилась"]
+                                   else "red" if row["Всплеск"]
+                                   else "orange" if row["Цена_изменилась"]
+                                   else "blue", axis=1)
         df_s["Размер"] = df_s["Всплеск"].apply(lambda x: 10 if x else 5)
 
         fig.add_trace(go.Scatter(
@@ -611,7 +593,8 @@ def update_line_graph(selected_sklads, selected_article, selected_nom, selected_
         "Обычный день": "blue"
     }
     for label, color in legend_colors.items():
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", marker=dict(size=8, color=color), name=label))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers",
+                                 marker=dict(size=8, color=color), name=label))
 
     fig.update_layout(
         title="Динамика остатков, продаж и цен (2025)",
@@ -622,8 +605,7 @@ def update_line_graph(selected_sklads, selected_article, selected_nom, selected_
     )
     return fig
 
-
-# ------------------- Таблица топ-100 -------------------
+# ------------------- Колбэк таблицы -------------------
 @app.callback(
     Output("top-100-table", "data"),
     Input("sklad-2025-filter", "value")
@@ -631,17 +613,19 @@ def update_line_graph(selected_sklads, selected_article, selected_nom, selected_
 def update_top_100_table(selected_sklads):
     dff = df_2025_clean.copy()
     if selected_sklads:
-        sklads = _to_list(selected_sklads)
-        dff = dff[dff["Склад"].isin(sklads)]
+        dff = dff[dff["Склад"].isin(selected_sklads)]
 
     top_100 = (
         dff.groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)["Продано"]
         .sum()
         .sort_values("Продано", ascending=False)
         .head(100)
+        .rename(columns={
+            "Артикул_товар": "Артикул",
+            "Номенклатура_канон": "Номенклатура"
+        })
     )
 
-    top_100 = top_100.rename(columns={"Артикул_товар": "Артикул", "Номенклатура_канон": "Номенклатура"})
     return top_100.to_dict("records")
 
 
