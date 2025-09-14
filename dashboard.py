@@ -500,28 +500,32 @@ def upload_2025_file(contents, filename):
     if contents is None:
         raise dash.exceptions.PreventUpdate
 
-    # --- Сообщение пользователю: идёт обработка ---
-    status_message = "Обработка файла, подождите..."
+    # --- Отображаем, что идет обработка ---
+    status_msg = f"Идёт обработка файла {filename}..."
     
-    # Разбор содержимого файла
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
 
-    tmp_folder = "tmp_uploaded"
-    os.makedirs(tmp_folder, exist_ok=True)
-    tmp_path = os.path.join(tmp_folder, filename)
-
+    tmp_path = os.path.join("tmp_uploaded", filename)
+    os.makedirs("tmp_uploaded", exist_ok=True)
     with open(tmp_path, "wb") as f:
         f.write(decoded)
 
-    # --- Обработка нового файла ---
+    # --- Обработка и добавление новых данных ---
     added_rows = process_new_file(tmp_path)
 
     if added_rows == 0:
-        return "Файл обработан, но новых данных не найдено", dash.no_update, dash.no_update, dash.no_update
+        return f"Файл {filename} обработан, но новых данных не найдено", dash.no_update, dash.no_update, dash.no_update
 
-    # --- Перезагрузка всех агрегированных данных ---
+    # --- Загружаем объединённые данные ---
     df_2025 = load_aggregated_2025_from_local("tmp_aggregated")
+
+    # --- Проверяем наличие колонки Остаток ---
+    if "Остаток" not in df_2025.columns:
+        if "Количество" in df_2025.columns:
+            df_2025["Остаток"] = df_2025["Количество"]
+        else:
+            return f"Ошибка: в файле {filename} отсутствуют необходимые колонки", dash.no_update, dash.no_update, dash.no_update
 
     # --- Приведение колонок к единому виду ---
     df_2025 = df_2025.rename(columns={
@@ -531,16 +535,9 @@ def upload_2025_file(contents, filename):
 
     # --- Пересчёт метрик ---
     df_2025 = add_canonical_name(df_2025)
-    df_2025 = calculate_daily_metrics(df_2025)
+    df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
 
-    # --- Чистые данные ---
-    global df_2025_clean
-    if "Аномалия" in df_2025.columns:
-        df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
-    else:
-        df_2025_clean = df_2025.copy()
-
-    # --- Обновление фильтров ---
+    # --- Обновляем фильтры ---
     sklads_options = [{'label': s, 'value': s} for s in sorted(df_2025_clean['Склад'].unique())]
     articles_options = [{'label': a, 'value': a} for a in sorted(df_2025_clean['Артикул_товар'].unique())]
     noms_options = [{'label': n, 'value': n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
