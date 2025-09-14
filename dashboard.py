@@ -510,9 +510,6 @@ def upload_2025_file(contents, filename):
     if contents is None:
         raise dash.exceptions.PreventUpdate
 
-    # --- Отображаем, что идет обработка ---
-    status_msg = f"Идёт обработка файла {filename}..."
-    
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
 
@@ -521,33 +518,23 @@ def upload_2025_file(contents, filename):
     with open(tmp_path, "wb") as f:
         f.write(decoded)
 
-    # --- Обработка и добавление новых данных ---
-    added_rows = process_new_file(tmp_path)
+    # --- обработка нового файла ---
+    added_rows, error_msg = process_new_file(tmp_path)
+
+    if error_msg:
+        return error_msg, dash.no_update, dash.no_update, dash.no_update
 
     if added_rows == 0:
         return f"Файл {filename} обработан, но новых данных не найдено", dash.no_update, dash.no_update, dash.no_update
 
-    # --- Загружаем объединённые данные ---
+    # --- Загружаем агрегированные данные ---
+    global df_2025_clean
     df_2025 = load_aggregated_2025_from_local("tmp_aggregated")
+    if df_2025.empty:
+        return "Ошибка: после обработки файла данные отсутствуют", dash.no_update, dash.no_update, dash.no_update
 
-    # --- Проверяем наличие колонки Остаток ---
-    if "Остаток" not in df_2025.columns:
-        if "Количество" in df_2025.columns:
-            df_2025["Остаток"] = df_2025["Количество"]
-        else:
-            return f"Ошибка: в файле {filename} отсутствуют необходимые колонки", dash.no_update, dash.no_update, dash.no_update
-
-    # --- Приведение колонок к единому виду ---
-    df_2025 = df_2025.rename(columns={
-        "Артикул": "Артикул_товар",
-        "Номенклатура": "Номенклатура_канон"
-    })
-
-    # --- Пересчёт метрик ---
-    df_2025 = add_canonical_name(df_2025)
     df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
 
-    # --- Обновляем фильтры ---
     sklads_options = [{'label': s, 'value': s} for s in sorted(df_2025_clean['Склад'].unique())]
     articles_options = [{'label': a, 'value': a} for a in sorted(df_2025_clean['Артикул_товар'].unique())]
     noms_options = [{'label': n, 'value': n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
