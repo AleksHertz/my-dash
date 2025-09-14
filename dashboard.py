@@ -326,7 +326,14 @@ app.layout = html.Div([
                         },
                         multiple=False
                     ),
-                    html.Div(id='upload-status', style={'marginTop': '10px', 'color': 'green'})
+                    dcc.Loading(
+                        id="loading-upload",
+                        type="circle",
+                        children=html.Div(
+                            id='upload-status',
+                            style={'marginTop': '10px', 'color': 'green'}
+                        )
+                    )
                 ], style={'marginBottom': '30px'}),
 
                 # ===================== Фильтры =====================
