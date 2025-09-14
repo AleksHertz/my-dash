@@ -20,6 +20,9 @@ import pyarrow
 import pyarrow.parquet as pq
 import polars as pl
 import traceback
+import base64
+from dash.exceptions import PreventUpdate
+from data_uploader import process_new_file
 # --------------------
 # НАСТРОЙКИ
 # --------------------
@@ -299,102 +302,122 @@ app.layout = html.Div([
             ]),
         ]),  # 👈 Закрыл первую вкладку
 
-        # ===================== Новая вкладка 2025 =====================
-        dcc.Tab(label="Анализ 2025", children=[
-            html.Div([
-                html.H2("Анализ продаж за 2025 год"),
+   # ===================== Новая вкладка 2025 =====================
+dcc.Tab(label="Анализ 2025", children=[
+    html.Div([
+        # ===================== Загрузка новых данных =====================
+        html.Div([
+            html.H3("Загрузить новые данные"),
+            dcc.Upload(
+                id='upload-data',
+                children=html.Div([
+                    'Перетащите файл сюда или ',
+                    html.A('выберите файл')
+                ]),
+                style={
+                    'width': '100%',
+                    'height': '60px',
+                    'lineHeight': '60px',
+                    'borderWidth': '1px',
+                    'borderStyle': 'dashed',
+                    'borderRadius': '5px',
+                    'textAlign': 'center',
+                    'marginBottom': '20px'
+                },
+                multiple=False
+            ),
+            html.Div(id='upload-status', style={'marginTop': '10px', 'color': 'green'})
+        ], style={'marginBottom': '30px'}),
 
-                # Фильтры
-                html.Div([
-                    html.Label("Склад:"),
-                    dcc.Dropdown(
-                        id='sklad-2025-filter',
-                        options=[{'label': s, 'value': s} for s in unique_sklads_2025],
-                        value=unique_sklads_2025,
-                        multi=True,
-                        placeholder="Выберите склад",
-                        clearable=True,
-                        style={'marginBottom': '15px'}
-                    ),
-                    html.Label("Артикул:"),
-                    dcc.Dropdown(
-                        id='article-2025-filter',
-                        options=[{'label': a, 'value': a} for a in unique_articles_2025],
-                        multi=False,
-                        placeholder="Выберите артикул",
-                        clearable=True,
-                        style={'marginBottom': '15px'}
-                    ),
-                    html.Label("Номенклатура:"),
-                    dcc.Dropdown(
-                        id='nom-2025-filter',
-                        options=[{'label': n, 'value': n} for n in unique_noms_2025],
-                        multi=False,
-                        placeholder="Выберите номенклатуру",
-                        clearable=True,
-                        style={'marginBottom': '15px'}
-                    ),
-                    html.Label("Месяц:"),
-                    dcc.Dropdown(
-                        id='month-2025-filter',
-                        options=[
-                            {'label': 'Январь', 'value': 1},
-                            {'label': 'Февраль', 'value': 2},
-                            {'label': 'Март', 'value': 3},
-                            {'label': 'Апрель', 'value': 4},
-                            {'label': 'Май', 'value': 5},
-                            {'label': 'Июнь', 'value': 6},
-                            {'label': 'Июль', 'value': 7},
-                            {'label': 'Август', 'value': 8},
-                            {'label': 'Сентябрь', 'value': 9},
-                            {'label': 'Октябрь', 'value': 10},
-                            {'label': 'Ноябрь', 'value': 11},
-                            {'label': 'Декабрь', 'value': 12},
-                        ],
-                        multi=False,
-                        placeholder="Выберите месяц",
-                        clearable=True,
-                        style={'marginBottom': '20px'}
-                    ),
-                ], style={'maxWidth': 500, 'marginBottom': 30}),
+        # ===================== Фильтры =====================
+        html.Div([
+            html.Label("Склад:"),
+            dcc.Dropdown(
+                id='sklad-2025-filter',
+                options=[{'label': s, 'value': s} for s in unique_sklads_2025],
+                value=unique_sklads_2025,
+                multi=True,
+                placeholder="Выберите склад",
+                clearable=True,
+                style={'marginBottom': '15px'}
+            ),
+            html.Label("Артикул:"),
+            dcc.Dropdown(
+                id='article-2025-filter',
+                options=[{'label': a, 'value': a} for a in unique_articles_2025],
+                multi=False,
+                placeholder="Выберите артикул",
+                clearable=True,
+                style={'marginBottom': '15px'}
+            ),
+            html.Label("Номенклатура:"),
+            dcc.Dropdown(
+                id='nom-2025-filter',
+                options=[{'label': n, 'value': n} for n in unique_noms_2025],
+                multi=False,
+                placeholder="Выберите номенклатуру",
+                clearable=True,
+                style={'marginBottom': '15px'}
+            ),
+            html.Label("Месяц:"),
+            dcc.Dropdown(
+                id='month-2025-filter',
+                options=[
+                    {'label': 'Январь', 'value': 1},
+                    {'label': 'Февраль', 'value': 2},
+                    {'label': 'Март', 'value': 3},
+                    {'label': 'Апрель', 'value': 4},
+                    {'label': 'Май', 'value': 5},
+                    {'label': 'Июнь', 'value': 6},
+                    {'label': 'Июль', 'value': 7},
+                    {'label': 'Август', 'value': 8},
+                    {'label': 'Сентябрь', 'value': 9},
+                    {'label': 'Октябрь', 'value': 10},
+                    {'label': 'Ноябрь', 'value': 11},
+                    {'label': 'Декабрь', 'value': 12},
+                ],
+                multi=False,
+                placeholder="Выберите месяц",
+                clearable=True,
+                style={'marginBottom': '20px'}
+            ),
+        ], style={'maxWidth': 500, 'marginBottom': 30}),
 
-                # Линейный график
-                html.H3("Динамика продаж, пополнений и цены выбранного товара"),
-                dcc.Graph(id='graph-2025-line'),
+        # ===================== Линейный график =====================
+        html.H3("Динамика продаж, пополнений и цены выбранного товара"),
+        dcc.Graph(id='graph-2025-line'),
 
-                # Таблица ТОП-100 товаров
-                html.H3("ТОП-100 товаров по продажам (2025)", style={"marginTop": "20px"}),
-                dash_table.DataTable(
-                    id="top-100-table",
-                    columns=[
-                        {"name": "Артикул", "id": "Артикул"},
-                        {"name": "Номенклатура", "id": "Номенклатура"},
-                        {"name": "Продано", "id": "Продано"},
-                        {"name": "Склад", "id": "Склад"},
-                    ],
-                    style_table={
-                        "overflowX": "auto",
-                        "maxHeight": "500px",
-                        "overflowY": "scroll",
-                        "width": "100%",
-                    },
-                    style_cell={
-                        "textAlign": "left",
-                        "padding": "5px",
-                        "textDecoration": "none",
-                        "whiteSpace": "normal",
-                        "height": "auto",
-                    },
-                    style_header={
-                        "fontWeight": "bold",
-                        "backgroundColor": "#f0f0f0",
-                        "textDecoration": "none",
-                    },
-                    page_size=20,
-                    row_selectable="single",
-                )
-            ])
-        ]),  # 👈 Закрыл вкладку "Анализ 2025"
+        # ===================== Таблица ТОП-100 =====================
+        html.H3("ТОП-100 товаров по продажам (2025)", style={"marginTop": "20px"}),
+        dash_table.DataTable(
+            id="top-100-table",
+            columns=[
+                {"name": "Артикул", "id": "Артикул"},
+                {"name": "Номенклатура", "id": "Номенклатура"},
+                {"name": "Продано", "id": "Продано"},
+                {"name": "Склад", "id": "Склад"},
+            ],
+            style_table={
+                "overflowX": "auto",
+                "maxHeight": "500px",
+                "overflowY": "scroll",
+                "width": "100%",
+            },
+            style_cell={
+                "textAlign": "left",
+                "padding": "5px",
+                "textDecoration": "none",
+                "whiteSpace": "normal",
+                "height": "auto",
+            },
+            style_header={
+                "fontWeight": "bold",
+                "backgroundColor": "#f0f0f0",
+                "textDecoration": "none",
+            },
+            page_size=20,
+            row_selectable="single",
+        )
     ])
 ])
 # --------------------
@@ -431,14 +454,71 @@ def get_item_line(df, article=None, nom=None, sklad_filter=None):
     return dff[keep]
 
 # ===================== Колбэки =====================
+def load_aggregated_2025_from_local(folder="tmp_aggregated") -> pd.DataFrame:
+    frames = []
+    for sklad_folder in os.listdir(folder):
+        path_sklad = os.path.join(folder, sklad_folder)
+        if not os.path.isdir(path_sklad):
+            continue
+        for file in os.listdir(path_sklad):
+            if file.endswith(".csv"):
+                df = pd.read_csv(os.path.join(path_sklad, file))
+                df["Артикул"] = df["Артикул"].astype(str).str.strip()
+                df["Номенклатура"] = df["Номенклатура"].astype(str).str.strip()
+                df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
+                frames.append(df)
 
-## ------------------- График остатков -------------------
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)
+
+    # Обработка
+    df = add_canonical_name(df)
+    df = calculate_daily_metrics(df)
+    return df
+
+
+@app.callback(
+    Output("upload-status", "children"),
+    Output("graph-2025-line", "figure"),
+    Output("top-100-table", "data"),
+    Input("upload-data", "contents"),
+    State("upload-data", "filename"),
+    State("sklad-2025-filter", "value")
+)
+def upload_new_file(contents, filename, selected_sklads):
+    if contents is None:
+        raise PreventUpdate
+
+    content_type, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
+
+    # Сохраняем временно файл
+    tmp_path = os.path.join("tmp", filename)
+    os.makedirs("tmp", exist_ok=True)
+    with open(tmp_path, "wb") as f:
+        f.write(decoded)
+
+    # Обработка нового файла и добавление в архив
+    added_rows = process_new_file(tmp_path, output_folder="tmp_aggregated", repo_path=".")
+
+    # Перезагрузка df_2025_clean после добавления новых данных
+    global df_2025_clean
+    df_2025_clean = load_and_prepare_2025_from_url()  # или загрузка из локальной папки
+
+    # Обновление графика и таблицы
+    fig = update_line_graph(selected_sklads, None, None, None)
+    top100 = update_top_100_table(selected_sklads)
+
+    status = f"Файл '{filename}' загружен, добавлено {added_rows} новых строк."
+    return status, fig, top100
+# ------------------- График остатков -------------------
 @app.callback( 
     Output("graph-2025-line", "figure"),
     Input("sklad-2025-filter", "value"),
     Input("article-2025-filter", "value"),
     Input("nom-2025-filter", "value"),
-    Input("month-2025-filter", "value"),   # 👈 новый фильтр
+    Input("month-2025-filter", "value"),
 )
 def update_line_graph(selected_sklads, selected_article, selected_nom, selected_month):
     if not selected_article and not selected_nom:
@@ -460,7 +540,7 @@ def update_line_graph(selected_sklads, selected_article, selected_nom, selected_
     if selected_nom:
         dff = dff[dff["Номенклатура_канон"] == selected_nom]
     if selected_month:
-        dff = dff[dff["Дата"].dt.month == selected_month]   # 👈 фильтр по месяцу
+        dff = dff[dff["Дата"].dt.month == selected_month]
 
     if dff.empty:
         return go.Figure(
@@ -540,32 +620,26 @@ def update_line_graph(selected_sklads, selected_article, selected_nom, selected_
     )
     return fig
 
+
 # ------------------- Таблица топ-100 -------------------
 @app.callback(
     Output("top-100-table", "data"),
     Input("sklad-2025-filter", "value")
 )
 def update_top_100_table(selected_sklads):
-    df_filtered = df_2025_clean.copy()  # pandas DataFrame
+    dff = df_2025_clean.copy()
     if selected_sklads:
-        df_filtered = df_filtered[df_filtered["Склад"].isin(selected_sklads)]
+        sklads = _to_list(selected_sklads)
+        dff = dff[dff["Склад"].isin(sklads)]
 
-    # Группировка по артикулу + номенклатуре + складу
     top_100 = (
-        df_filtered.groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)["Продано"]
+        dff.groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)["Продано"]
         .sum()
         .sort_values("Продано", ascending=False)
         .head(100)
     )
 
-    # Переименовываем колонки под таблицу
-    top_100 = top_100.rename(
-        columns={
-            "Артикул_товар": "Артикул",
-            "Номенклатура_канон": "Номенклатура",
-        }
-    )
-
+    top_100 = top_100.rename(columns={"Артикул_товар": "Артикул", "Номенклатура_канон": "Номенклатура"})
     return top_100.to_dict("records")
 
 
@@ -573,14 +647,14 @@ def update_top_100_table(selected_sklads):
 @app.callback(
     Output("article-2025-filter", "value"),
     Output("nom-2025-filter", "value"),
-    Output("month-2025-filter", "value"),   # 👈 добавили сброс месяца
+    Output("month-2025-filter", "value"),
     Input("top-100-table", "selected_rows"),
     State("top-100-table", "data")
 )
 def select_from_table(selected_rows, table_data):
     if selected_rows and table_data:
         row = table_data[selected_rows[0]]
-        return row["Артикул"], row["Номенклатура"], None  # 👈 сбрасываем месяц
+        return row["Артикул"], row["Номенклатура"], None
     return None, None, None
 
 # --- Выгрузка топ-ходовых ---
