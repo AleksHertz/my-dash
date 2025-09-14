@@ -487,44 +487,65 @@ def load_aggregated_2025_from_local(folder="tmp_aggregated") -> pd.DataFrame:
     return df
 
 
+# --- Колбэк загрузки нового файла ---
 @app.callback(
     Output("upload-status", "children"),
+    Output("sklad-2025-filter", "options"),
+    Output("article-2025-filter", "options"),
+    Output("nom-2025-filter", "options"),
     Input("upload-data", "contents"),
-    State("upload-data", "filename"),
-    prevent_initial_call=True
+    State("upload-data", "filename")
 )
 def upload_2025_file(contents, filename):
     if contents is None:
-        return "Файл не загружен"
+        raise dash.exceptions.PreventUpdate
 
-    # --- Декодируем и сохраняем файл ---
+    # --- Сообщение пользователю: идёт обработка ---
+    status_message = "Обработка файла, подождите..."
+    
+    # Разбор содержимого файла
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
-    tmp_path = os.path.join("tmp_uploaded", filename)
-    os.makedirs("tmp_uploaded", exist_ok=True)
+
+    tmp_folder = "tmp_uploaded"
+    os.makedirs(tmp_folder, exist_ok=True)
+    tmp_path = os.path.join(tmp_folder, filename)
+
     with open(tmp_path, "wb") as f:
         f.write(decoded)
 
     # --- Обработка нового файла ---
     added_rows = process_new_file(tmp_path)
 
-    # --- Перезагружаем все данные ---
-    df_2025 = load_and_prepare_2025_from_url()
+    if added_rows == 0:
+        return "Файл обработан, но новых данных не найдено", dash.no_update, dash.no_update, dash.no_update
 
-    # 🔧 Пересчёт метрик
+    # --- Перезагрузка всех агрегированных данных ---
+    df_2025 = load_aggregated_2025_from_local("tmp_aggregated")
+
+    # --- Приведение колонок к единому виду ---
+    df_2025 = df_2025.rename(columns={
+        "Артикул": "Артикул_товар",
+        "Номенклатура": "Номенклатура_канон"
+    })
+
+    # --- Пересчёт метрик ---
     df_2025 = add_canonical_name(df_2025)
     df_2025 = calculate_daily_metrics(df_2025)
 
+    # --- Чистые данные ---
+    global df_2025_clean
     if "Аномалия" in df_2025.columns:
         df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
     else:
         df_2025_clean = df_2025.copy()
 
-    # --- Сообщение пользователю ---
-    if added_rows > 0:
-        return f"Файл {filename} успешно добавлен: {added_rows} строк"
-    else:
-        return f"Файл {filename} уже был загружен, новых строк нет"
+    # --- Обновление фильтров ---
+    sklads_options = [{'label': s, 'value': s} for s in sorted(df_2025_clean['Склад'].unique())]
+    articles_options = [{'label': a, 'value': a} for a in sorted(df_2025_clean['Артикул_товар'].unique())]
+    noms_options = [{'label': n, 'value': n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
+
+    return f"Файл {filename} успешно добавлен: {added_rows} строк", sklads_options, articles_options, noms_options
 # ------------------- Колбэк графика -------------------
 @app.callback(
     Output("graph-2025-line", "figure"),
