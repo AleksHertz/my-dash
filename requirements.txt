@@ -9,5 +9,6 @@ pyarrow
 polars
 gitpython
 xlrd
+PyGithub
 
 
