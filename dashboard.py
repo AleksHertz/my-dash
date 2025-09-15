@@ -535,92 +535,104 @@ def normalize_dataframe(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return df
 
 
-# --- Сам колбэк ---
+# --- Колбэк загрузки файла через Dash ---
 @app.callback(
     Output("upload-status", "children"),
-    Output("upload-log", "children"),
-    Output("upload-progress", "value"),
-    Output("upload-progress", "max"),
+    Output("sklad-2025-filter", "options"),
+    Output("article-2025-filter", "options"),
+    Output("nom-2025-filter", "options"),
     Input("upload-data", "contents"),
-    State("upload-data", "filename"),
-    prevent_initial_call=True,
+    State("upload-data", "filename")
 )
 def upload_2025_file(contents, filename):
-    if not contents:
-        return "Файл не загружен", no_update, no_update, no_update
+    if contents is None:
+        raise dash.exceptions.PreventUpdate
 
-    try:
-        logging.info(f"[upload_2025_file] загружаем {filename}")
+    # --- Декодируем файл ---
+    content_type, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
 
-        # читаем Excel
-        content_type, content_string = contents.split(",")
-        df_new = pd.read_excel(io.BytesIO(base64.b64decode(content_string)))
+    os.makedirs(TMP_UPLOAD_PATH, exist_ok=True)
+    tmp_path = os.path.join(TMP_UPLOAD_PATH, filename)
+    with open(tmp_path, "wb") as f:
+        f.write(decoded)
 
-        # нормализуем
-        df_new = normalize_dataframe(df_new, filename)
+    # --- Чтение Excel ---
+    df_new = read_excel_file(tmp_path, sklad_name="auto")
+    if df_new is None or df_new.empty:
+        return f"Файл {filename} пуст или некорректен", dash.no_update, dash.no_update, dash.no_update
 
-        if df_new.empty:
-            return f"Файл {filename} пуст после очистки", no_update, no_update, no_update
+    # --- Обработка пустых артикулов ---
+    empty_mask = df_new["Артикул"].isna() | (df_new["Артикул"].astype(str).str.strip() == "")
+    unknown_counter = 1
+    for idx in df_new[empty_mask].index:
+        df_new.at[idx, "Артикул"] = f"UNKNOWN_{unknown_counter}"
+        unknown_counter += 1
 
-        # подключение к GitHub
-        g = github.Github(GITHUB_TOKEN)
-        repo = g.get_repo(GITHUB_REPO)
+    # --- Приведение типов ---
+    df_new["Артикул"] = df_new["Артикул"].astype(str).str.strip()
+    df_new["Номенклатура"] = df_new["Номенклатура"].astype(str).str.strip()
+    df_new["Дата"] = pd.to_datetime(df_new["Дата"], errors="coerce")
+    df_new["Остаток"] = pd.to_numeric(df_new["Остаток"], errors="coerce")
+    df_new["Цена"] = pd.to_numeric(df_new["Цена"], errors="coerce") if "Цена" in df_new.columns else np.nan
 
-        added_rows = 0
-        total_groups = df_new.groupby(["Склад", "Артикул"]).ngroups
-        processed = 0
+    # --- Подключаем GitHub ---
+    g = Github(GITHUB_TOKEN)
+    repo = g.get_repo(GITHUB_REPO)
 
-        # группировка
-        for (sklad, article), group in df_new.groupby(["Склад", "Артикул"]):
-            folder_path = f"data/new_uploads/{safe_filename(sklad)}"
-            remote_path = f"{folder_path}/{safe_filename(article)}.csv"
+    added_rows_total = 0
+    added_files_total = 0
 
-            # создаём подпапку при необходимости
+    # --- Группировка по складу и артикулу ---
+    for (sklad, article), group in df_new.groupby(["Склад", "Артикул"]):
+        remote_path = f"data/new_uploads/{safe_filename(sklad)}/{safe_filename(article)}.csv"
+        os.makedirs(os.path.join(TMP_UPLOAD_PATH, safe_filename(sklad)), exist_ok=True)
+
+        # --- Проверка существующего файла на GitHub ---
+        try:
+            file_content = repo.get_contents(remote_path, ref=GITHUB_BRANCH)
+            df_existing = pd.read_csv(io.StringIO(file_content.decoded_content.decode("utf-8")))
+            max_date = pd.to_datetime(df_existing["Дата"], errors="coerce").max()
+            group_to_add = group[pd.to_datetime(group["Дата"]) > max_date]
+        except Exception:
+            # Файл ещё не существует → загружаем весь group
+            group_to_add = group.copy()
+
+        if not group_to_add.empty:
+            csv_bytes = group_to_add.to_csv(index=False, encoding="utf-8-sig").encode("utf-8")
+            commit_msg = f"Добавление новых данных: {filename}, {len(group_to_add)} строк"
             try:
-                repo.get_contents(folder_path, ref=GITHUB_BRANCH)
-            except github.GithubException.UnknownObjectException:
-                repo.create_file(f"{folder_path}/.gitkeep",
-                                 f"init folder {folder_path}", "",
-                                 branch=GITHUB_BRANCH)
-
-            # проверка существующего файла
-            try:
-                file_content = repo.get_contents(remote_path, ref=GITHUB_BRANCH)
-                df_existing = pd.read_csv(io.StringIO(file_content.decoded_content.decode("utf-8")))
-                df_existing["Дата"] = pd.to_datetime(df_existing["Дата"], errors="coerce")
-
-                max_date = df_existing["Дата"].max()
-                group = group[group["Дата"] > max_date]
-            except github.GithubException.UnknownObjectException:
-                pass  # файла нет → берём весь group
-
-            if not group.empty:
-                csv_bytes = group.to_csv(index=False, encoding="utf-8-sig").encode("utf-8")
-                commit_msg = f"Добавление новых данных: {filename}, {len(group)} строк"
-
+                # обновляем файл, если есть
                 try:
-                    # обновляем или создаём
-                    try:
-                        file_content = repo.get_contents(remote_path, ref=GITHUB_BRANCH)
-                        repo.update_file(remote_path, commit_msg, csv_bytes,
-                                         sha=file_content.sha, branch=GITHUB_BRANCH)
-                    except github.GithubException.UnknownObjectException:
-                        repo.create_file(remote_path, commit_msg, csv_bytes,
-                                         branch=GITHUB_BRANCH)
+                    file_content = repo.get_contents(remote_path, ref=GITHUB_BRANCH)
+                    repo.update_file(remote_path, commit_msg, csv_bytes, sha=file_content.sha, branch=GITHUB_BRANCH)
+                except Exception:
+                    # создаём файл
+                    repo.create_file(remote_path, commit_msg, csv_bytes, branch=GITHUB_BRANCH)
+                    added_files_total += 1
 
-                    added_rows += len(group)
-                except Exception as e:
-                    logging.error(f"[upload_2025_file] Ошибка загрузки {remote_path}: {e}", exc_info=True)
-                    return f"Ошибка загрузки {remote_path}: {e}", no_update, no_update, no_update
+                added_rows_total += len(group_to_add)
+                logging.info(f"[upload_2025_file] {len(group_to_add)} строк добавлено в {remote_path}")
+            except Exception as e:
+                logging.error(f"[upload_2025_file] Ошибка загрузки {remote_path} в GitHub: {e}", exc_info=True)
+                return f"Ошибка загрузки в GitHub: {e}", dash.no_update, dash.no_update, dash.no_update
 
-            processed += 1
+    # --- Обновляем глобальный DataFrame ---
+    global df_2025_clean
+    df_2025 = load_combined_2025()
+    if df_2025.empty:
+        return "Ошибка: после обработки файла данные отсутствуют", dash.no_update, dash.no_update, dash.no_update
+    df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
 
-        logging.info(f"[upload_2025_file] {filename}: добавлено {added_rows} строк, обработано {processed}/{total_groups} групп")
-        return f"Файл {filename} успешно загружен: добавлено {added_rows} строк", "", processed, total_groups
+    # --- Формируем options для фильтров ---
+    sklads_options = [{"label": s, "value": s} for s in sorted(df_2025_clean['Склад'].unique())]
+    articles_options = [{"label": a, "value": a} for a in sorted(df_2025_clean['Артикул_товар'].astype(str).unique())]
+    noms_options = [{"label": n, "value": n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
 
-    except Exception as e:
-        logging.error(f"[upload_2025_file] Ошибка: {e}", exc_info=True)
-        return f"Ошибка при обработке файла {filename}: {e}", no_update, no_update, no_update
+    if added_rows_total == 0:
+        return f"Файл {filename} обработан, но новых данных не найдено", sklads_options, articles_options, noms_options
+    return f"Файл {filename} успешно добавлен: {added_rows_total} строк, {added_files_total} новых файлов", \
+           sklads_options, articles_options, noms_options
 # ------------------- Колбэк графика -------------------
 @app.callback(
     Output("graph-2025-line", "figure"),
