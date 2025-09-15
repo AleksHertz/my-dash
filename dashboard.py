@@ -138,13 +138,14 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # токен с правом push
 GITHUB_REPO = "AleksHertz/my-dash"
 GITHUB_BRANCH = "main"
 ARCHIVE_URL = "https://github.com/AleksHertz/my-dash/raw/refs/heads/main/data/aggregated.zip"
-TMP_UPLOAD_PATH = "tmp_uploaded"
+TMP_UPLOAD_PATH = "tmp_uploaded"  # временная папка для загруженных файлов
 
-# --- Вспомогательная функция очистки и приведения DataFrame ---
+# --- Вспомогательная функция очистки и унификации DataFrame ---
 def unify_and_clean_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-    # Унификация колонок
+
+    # Унификация колонки Остаток
     if "Количество" in df.columns and "Остаток" not in df.columns:
         df.rename(columns={"Количество": "Остаток"}, inplace=True)
 
@@ -158,11 +159,10 @@ def unify_and_clean_df(df: pd.DataFrame) -> pd.DataFrame:
     df["Остаток"] = pd.to_numeric(df["Остаток"], errors="coerce")
     df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce") if "Цена" in df.columns else np.nan
 
-    # Удаляем строки без ключевых данных
     df = df.dropna(subset=["Дата", "Артикул", "Остаток"])
-    # Удаляем дубликаты
     df = df.drop_duplicates(subset=["Дата", "Артикул", "Склад"], keep="last")
     return df
+
 
 # --- Загрузка архива с GitHub ---
 def load_and_prepare_2025_from_url(url: str = ARCHIVE_URL) -> pd.DataFrame:
@@ -189,76 +189,36 @@ def load_and_prepare_2025_from_url(url: str = ARCHIVE_URL) -> pd.DataFrame:
         logging.info(f"[load_and_prepare_2025_from_url] Загружено файлов: {len(frames)}")
     except Exception as e:
         logging.error(f"[load_and_prepare_2025_from_url] Ошибка загрузки архива: {e}", exc_info=True)
+
     if not frames:
         return pd.DataFrame()
     df = pd.concat(frames, ignore_index=True)
     return unify_and_clean_df(df)
 
-# --- Загрузка объединённых данных ---
+# --- Объединённая загрузка данных (архив + новые через GitHub API) ---
 def load_combined_2025() -> pd.DataFrame:
     df_archive = load_and_prepare_2025_from_url()
-    # Здесь можно добавить чтение новых файлов через GitHub API при необходимости
-    df = df_archive.copy() if not df_archive.empty else pd.DataFrame()
-    if df.empty:
-        logging.warning("[load_combined_2025] Нет данных для 2025")
-        return df
-    # Обработка канонических названий и ежедневных метрик
-    df = add_canonical_name(df)
-    df = calculate_daily_metrics(df)
-    return df
+    if df_archive.empty:
+        logging.warning("[load_combined_2025] Нет данных в архиве")
+        return pd.DataFrame()
+    df_archive = add_canonical_name(df_archive)
+    df_archive = calculate_daily_metrics(df_archive)
+    return df_archive
 
-# --- Функция пуша Excel/CSV в GitHub через API ---
-def github_upload_file(local_path: str, target_path: str, commit_message: str) -> bool:
-    """
-    Загружает локальный файл (CSV или Excel) в GitHub.
-    Если файл существует — обновляет его, иначе создаёт новый.
-    
-    Args:
-        local_path: путь к локальному файлу
-        target_path: путь в репозитории (например "data/new_uploads/Москва/12345.csv")
-        commit_message: сообщение коммита
-    Returns:
-        True если успешно, False при ошибке
-    """
-    if not GITHUB_TOKEN:
-        logging.error("[github_upload_file] GITHUB_TOKEN не задан в переменных окружения")
-        return False
-
+# --- Функция загрузки файла в GitHub через API ---
+def github_upload_file(local_path: str, target_path: str, commit_message: str):
+    g = Github(GITHUB_TOKEN)
+    repo = g.get_repo(GITHUB_REPO)
     try:
-        g = Github(GITHUB_TOKEN)
-        repo = g.get_repo(GITHUB_REPO)
-
-        # --- Читаем локальный файл ---
         with open(local_path, "rb") as f:
             content = f.read()
-
         try:
-            # Проверяем, существует ли файл
             file = repo.get_contents(target_path, ref=GITHUB_BRANCH)
-            # Файл существует → обновляем
-            repo.update_file(
-                path=target_path,
-                message=commit_message,
-                content=content,
-                sha=file.sha,
-                branch=GITHUB_BRANCH
-            )
-            logging.info(f"[github_upload_file] Файл {target_path} обновлён в GitHub")
-        except GithubException as e:
-            if e.status == 404:
-                # Файл не найден → создаём новый
-                repo.create_file(
-                    path=target_path,
-                    message=commit_message,
-                    content=content,
-                    branch=GITHUB_BRANCH
-                )
-                logging.info(f"[github_upload_file] Файл {target_path} создан в GitHub")
-            else:
-                raise
-
+            repo.update_file(path=target_path, message=commit_message, content=content, sha=file.sha, branch=GITHUB_BRANCH)
+        except:
+            repo.create_file(path=target_path, message=commit_message, content=content, branch=GITHUB_BRANCH)
+        logging.info(f"[github_upload_file] Файл {target_path} успешно загружен в GitHub")
         return True
-
     except Exception as e:
         logging.error(f"[github_upload_file] Ошибка загрузки {target_path} в GitHub: {e}", exc_info=True)
         return False
