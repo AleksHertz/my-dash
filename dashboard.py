@@ -22,7 +22,7 @@ import polars as pl
 import traceback
 import base64
 from dash.exceptions import PreventUpdate
-from data_uploader import process_new_file
+from data_uploader import process_new_file, read_excel_file
 from github import Github
 # --------------------
 # НАСТРОЙКИ
