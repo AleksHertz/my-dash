@@ -537,10 +537,24 @@ def upload_2025_file(contents, filename):
     if df_new is None or df_new.empty:
         return f"Файл {filename} пуст или некорректен", dash.no_update, dash.no_update, dash.no_update
 
+    # --- Обработка пустых артикулов ---
+    df_new["Артикул"] = (
+        df_new["Артикул"]
+        .astype(str)
+        .str.strip()
+        .replace({"nan": None, "": None})
+    )
+    mask = df_new["Артикул"].isna() | (df_new["Артикул"] == "")
+    for idx in df_new.index[mask]:
+        new_val = f"NO_ARTICLE_{idx}"
+        logging.warning(f"[upload_2025_file] Найден пустой артикул в строке {idx}, заменён на {new_val}")
+        df_new.at[idx, "Артикул"] = new_val
+
     # --- Проверка и добавление новых строк ---
     added_rows = 0
     g = Github(GITHUB_TOKEN)
     repo = g.get_repo(GITHUB_REPO)
+
     for (sklad, article), group in df_new.groupby(["Склад", "Артикул"]):
         remote_path = f"data/new_uploads/{safe_filename(sklad)}/{safe_filename(article)}.csv"
 
