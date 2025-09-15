@@ -96,7 +96,7 @@ def read_excel_file(file_path, sklad_name="auto"):
         logging.error(f"[read_excel_file] Ошибка при чтении {file_path}: {e}", exc_info=True)
         return None
 
-# === Обработка нового файла ===
+# --- Обработка нового файла Excel и пуш в GitHub ---
 def process_new_file(file_path, target_repo_path="data/new_uploads"):
     logging.info(f"[process_new_file] Начата обработка {file_path}")
     df_new = read_excel_file(file_path, sklad_name="auto")
@@ -112,11 +112,9 @@ def process_new_file(file_path, target_repo_path="data/new_uploads"):
         logging.error(msg)
         return 0, msg
 
-    # формируем путь в репозитории GitHub
     target_path = os.path.join(target_repo_path, os.path.basename(file_path))
     commit_message = f"Добавлен новый файл {os.path.basename(file_path)}"
     success = github_upload_file(file_path, target_path, commit_message)
-
     added_rows = len(df_new) if success else 0
     logging.info(f"[process_new_file] Завершено. Добавлено строк: {added_rows}")
     return added_rows, None if success else "Ошибка при загрузке файла в GitHub"
