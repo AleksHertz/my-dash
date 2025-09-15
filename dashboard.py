@@ -23,6 +23,7 @@ import traceback
 import base64
 from dash.exceptions import PreventUpdate
 from data_uploader import process_new_file
+from github import Github
 # --------------------
 # НАСТРОЙКИ
 # --------------------
@@ -133,12 +134,38 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return df_daily
 
 
-NEW_UPLOADS_FOLDER = os.path.join("data", "new_uploads")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # токен с правом push
+GITHUB_REPO = "AleksHertz/my-dash"
+GITHUB_BRANCH = "main"
+ARCHIVE_URL = "https://github.com/AleksHertz/my-dash/raw/refs/heads/main/data/aggregated.zip"
+TMP_UPLOAD_PATH = "tmp_uploaded"
 
-def load_and_prepare_2025_from_url(
-    url: str = "https://github.com/AleksHertz/my-dash/raw/refs/heads/main/data/aggregated.zip"
-) -> pd.DataFrame:
-    """Загружает архив с GitHub, собирает CSV и приводит к единому DataFrame."""
+# --- Вспомогательная функция очистки и приведения DataFrame ---
+def unify_and_clean_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    # Унификация колонок
+    if "Количество" in df.columns and "Остаток" not in df.columns:
+        df.rename(columns={"Количество": "Остаток"}, inplace=True)
+
+    for col in ["Дата", "Артикул", "Номенклатура", "Остаток", "Склад"]:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
+    df["Артикул"] = df["Артикул"].astype(str).str.strip()
+    df["Номенклатура"] = df["Номенклатура"].astype(str).str.strip()
+    df["Остаток"] = pd.to_numeric(df["Остаток"], errors="coerce")
+    df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce") if "Цена" in df.columns else np.nan
+
+    # Удаляем строки без ключевых данных
+    df = df.dropna(subset=["Дата", "Артикул", "Остаток"])
+    # Удаляем дубликаты
+    df = df.drop_duplicates(subset=["Дата", "Артикул", "Склад"], keep="last")
+    return df
+
+# --- Загрузка архива с GitHub ---
+def load_and_prepare_2025_from_url(url: str = ARCHIVE_URL) -> pd.DataFrame:
     frames = []
     try:
         resp = requests.get(url)
@@ -162,92 +189,79 @@ def load_and_prepare_2025_from_url(
         logging.info(f"[load_and_prepare_2025_from_url] Загружено файлов: {len(frames)}")
     except Exception as e:
         logging.error(f"[load_and_prepare_2025_from_url] Ошибка загрузки архива: {e}", exc_info=True)
-
     if not frames:
         return pd.DataFrame()
-
     df = pd.concat(frames, ignore_index=True)
-    df = unify_and_clean_df(df)
-    return df
+    return unify_and_clean_df(df)
 
-def load_new_uploads_local(folder=NEW_UPLOADS_FOLDER) -> pd.DataFrame:
-    """Прочитать все CSV из data/new_uploads (структура: folder/<Склад>/<Артикул>.csv)."""
-    frames = []
-    if not os.path.exists(folder):
-        os.makedirs(folder, exist_ok=True)
-        return pd.DataFrame()
-
-    for root, _, files in os.walk(folder):
-        for fname in files:
-            if not fname.lower().endswith(".csv"):
-                continue
-            fpath = os.path.join(root, fname)
-            try:
-                df = pd.read_csv(fpath)
-                df.columns = [c.strip() for c in df.columns]
-
-                # Унификация колонки Остаток
-                if "Количество" in df.columns and "Остаток" not in df.columns:
-                    df.rename(columns={"Количество": "Остаток"}, inplace=True)
-
-                frames.append(df)
-            except Exception as e:
-                logging.exception(f"[load_new_uploads_local] Ошибка чтения {fpath}: {e}")
-
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-def unify_and_clean_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Приведение типов, очистка дубликатов, обработка пустых значений."""
-    if df.empty:
-        return df
-
-    # Унификация колонок
-    if "Количество" in df.columns and "Остаток" not in df.columns:
-        df.rename(columns={"Количество": "Остаток"}, inplace=True)
-
-    required_cols = ["Дата", "Артикул", "Номенклатура", "Остаток", "Склад"]
-    for col in required_cols:
-        if col not in df.columns:
-            df[col] = np.nan
-
-    df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
-    df["Артикул"] = df["Артикул"].astype(str).str.strip()
-    df["Номенклатура"] = df["Номенклатура"].astype(str).str.strip()
-    df["Остаток"] = pd.to_numeric(df["Остаток"], errors="coerce")
-    df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce") if "Цена" in df.columns else np.nan
-
-    # Отбрасываем строки без ключевых данных
-    df = df.dropna(subset=["Дата", "Артикул", "Остаток"])
-
-    # Удаляем дубли по ключам
-    df = df.drop_duplicates(subset=["Дата", "Артикул", "Склад"], keep="last")
-    return df
-
-def load_combined_2025():
-    """
-    Объединяет данные из архива (GitHub) и локальных новых загрузок (new_uploads).
-    Возвращает DataFrame, уже пройденный через add_canonical_name и calculate_daily_metrics.
-    """
+# --- Загрузка объединённых данных ---
+def load_combined_2025() -> pd.DataFrame:
     df_archive = load_and_prepare_2025_from_url()
-    df_new = load_new_uploads_local()
-
-    if df_archive.empty and df_new.empty:
-        logging.warning("[load_combined_2025] Нет данных ни в архиве, ни в new_uploads")
-        return pd.DataFrame()
-
-    if df_archive.empty:
-        df = df_new.copy()
-    elif df_new.empty:
-        df = df_archive.copy()
-    else:
-        df = pd.concat([df_archive, df_new], ignore_index=True, sort=False)
-
-    df = unify_and_clean_df(df)
-
-    # Обработка канонических названий и расчет метрик
+    # Здесь можно добавить чтение новых файлов через GitHub API при необходимости
+    df = df_archive.copy() if not df_archive.empty else pd.DataFrame()
+    if df.empty:
+        logging.warning("[load_combined_2025] Нет данных для 2025")
+        return df
+    # Обработка канонических названий и ежедневных метрик
     df = add_canonical_name(df)
     df = calculate_daily_metrics(df)
     return df
+
+# --- Функция пуша Excel/CSV в GitHub через API ---
+def github_upload_file(local_path: str, target_path: str, commit_message: str) -> bool:
+    """
+    Загружает локальный файл (CSV или Excel) в GitHub.
+    Если файл существует — обновляет его, иначе создаёт новый.
+    
+    Args:
+        local_path: путь к локальному файлу
+        target_path: путь в репозитории (например "data/new_uploads/Москва/12345.csv")
+        commit_message: сообщение коммита
+    Returns:
+        True если успешно, False при ошибке
+    """
+    if not GITHUB_TOKEN:
+        logging.error("[github_upload_file] GITHUB_TOKEN не задан в переменных окружения")
+        return False
+
+    try:
+        g = Github(GITHUB_TOKEN)
+        repo = g.get_repo(GITHUB_REPO)
+
+        # --- Читаем локальный файл ---
+        with open(local_path, "rb") as f:
+            content = f.read()
+
+        try:
+            # Проверяем, существует ли файл
+            file = repo.get_contents(target_path, ref=GITHUB_BRANCH)
+            # Файл существует → обновляем
+            repo.update_file(
+                path=target_path,
+                message=commit_message,
+                content=content,
+                sha=file.sha,
+                branch=GITHUB_BRANCH
+            )
+            logging.info(f"[github_upload_file] Файл {target_path} обновлён в GitHub")
+        except GithubException as e:
+            if e.status == 404:
+                # Файл не найден → создаём новый
+                repo.create_file(
+                    path=target_path,
+                    message=commit_message,
+                    content=content,
+                    branch=GITHUB_BRANCH
+                )
+                logging.info(f"[github_upload_file] Файл {target_path} создан в GitHub")
+            else:
+                raise
+
+        return True
+
+    except Exception as e:
+        logging.error(f"[github_upload_file] Ошибка загрузки {target_path} в GitHub: {e}", exc_info=True)
+        return False
 
 # --- Загрузка данных при старте ---
 df_2025 = load_combined_2025()
@@ -535,45 +549,8 @@ def get_item_line(df, article=None, nom=None, sklad_filter=None):
             "Продано", "Пришло", "Цена", "Цена_изменилась", "Аномалия"]
     return dff[keep]
 
-# ===================== Колбэки =====================
-def load_aggregated_2025_from_local(folder="tmp_aggregated") -> pd.DataFrame:
-    frames = []
-    for sklad_folder in os.listdir(folder):
-        path_sklad = os.path.join(folder, sklad_folder)
-        if not os.path.isdir(path_sklad):
-            continue
-        for file in os.listdir(path_sklad):
-            if file.endswith(".csv"):
-                df = pd.read_csv(os.path.join(path_sklad, file))
-                df["Артикул"] = df["Артикул"].astype(str).str.strip()
-                df["Номенклатура"] = df["Номенклатура"].astype(str).str.strip()
-                df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
-                frames.append(df)
 
-    if not frames:
-        return pd.DataFrame()
-
-    df = pd.concat(frames, ignore_index=True)
-
-    # --- Проверяем наличие колонки Остаток ---
-    if "Остаток" not in df.columns:
-        if "Количество" in df.columns:
-            df["Остаток"] = df["Количество"]
-        else:
-            raise ValueError("В данных отсутствуют колонки 'Остаток' и 'Количество'")
-
-    # --- Приведение к каноническому виду ---
-    df = add_canonical_name(df)
-
-    # --- Расчёт ежедневных метрик ---
-    df = calculate_daily_metrics(df)
-
-    return df
-
-# --- Колбэк загрузки нового файла ---
-UPLOADS_PATH = os.path.join("data", "new_uploads")
-TMP_UPLOAD_PATH = "tmp_uploaded"
-
+# --- Колбэк загрузки файла через Dash ---
 @app.callback(
     Output("upload-status", "children"),
     Output("sklad-2025-filter", "options"),
@@ -586,39 +563,52 @@ def upload_2025_file(contents, filename):
     if contents is None:
         raise dash.exceptions.PreventUpdate
 
-    # --- Декодирование файла ---
+    # --- Декодирование ---
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
 
-    # --- Сохраняем временно ---
     os.makedirs(TMP_UPLOAD_PATH, exist_ok=True)
     tmp_path = os.path.join(TMP_UPLOAD_PATH, filename)
     with open(tmp_path, "wb") as f:
         f.write(decoded)
 
-    # --- Обработка нового файла ---
-    added_rows, error_msg = process_new_file(tmp_path, output_folder=UPLOADS_PATH)
+    # --- Проверка и конвертация Excel в CSV ---
+    df_new = read_excel_file(tmp_path)  # Ваша функция конвертации Excel → DataFrame
+    if df_new.empty:
+        return f"Файл {filename} пуст или некорректен", dash.no_update, dash.no_update, dash.no_update
 
-    if error_msg:
-        return error_msg, dash.no_update, dash.no_update, dash.no_update
+    df_new = unify_and_clean_df(df_new)
 
-    if added_rows == 0:
+    # --- Проверка на дубликаты (по дате + артикулу + складу) перед пушем ---
+    df_combined = load_combined_2025()
+    if not df_combined.empty:
+        df_new = df_new.merge(
+            df_combined[["Дата", "Артикул", "Склад"]],
+            on=["Дата", "Артикул", "Склад"],
+            how="left",
+            indicator=True
+        )
+        df_new = df_new[df_new["_merge"] == "left_only"].drop(columns="_merge")
+
+    if df_new.empty:
         return f"Файл {filename} обработан, но новых данных не найдено", dash.no_update, dash.no_update, dash.no_update
 
-    # --- Загружаем объединённые данные ---
+    # --- Пушим новые данные в GitHub ---
+    target_path = f"data/new_uploads/{filename}"
+    success = github_upload_file(tmp_path, target_path, f"Добавлен новый файл {filename}")
+    if not success:
+        return f"Файл {filename} не удалось загрузить в GitHub", dash.no_update, dash.no_update, dash.no_update
+
+    # --- Обновляем объединённые данные для графиков ---
     global df_2025_clean
     df_2025 = load_combined_2025()
-    if df_2025.empty:
-        return "Ошибка: после обработки файла данные отсутствуют", dash.no_update, dash.no_update, dash.no_update
+    df_2025_clean = df_2025[~df_2025["Аномалия"]].copy() if not df_2025.empty else pd.DataFrame()
 
-    df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
-
-    # --- Формируем options для фильтров ---
     sklads_options = [{"label": s, "value": s} for s in sorted(df_2025_clean['Склад'].unique())]
     articles_options = [{"label": a, "value": a} for a in sorted(df_2025_clean['Артикул_товар'].astype(str).unique())]
     noms_options = [{"label": n, "value": n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
 
-    return f"Файл {filename} успешно добавлен: {added_rows} строк", sklads_options, articles_options, noms_options
+    return f"Файл {filename} успешно добавлен: {len(df_new)} строк", sklads_options, articles_options, noms_options
 # ------------------- Колбэк графика -------------------
 @app.callback(
     Output("graph-2025-line", "figure"),
