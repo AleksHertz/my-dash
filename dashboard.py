@@ -175,15 +175,93 @@ def load_and_prepare_2025_from_url(
 
     return df
 
+NEW_UPLOADS_FOLDER = os.path.join("data", "new_uploads")
 
+def load_new_uploads_local(folder=NEW_UPLOADS_FOLDER) -> pd.DataFrame:
+    """Прочитать все CSV из data/new_uploads (структура: folder/<Склад>/<Артикул>.csv)."""
+    frames = []
+    if not os.path.exists(folder):
+        os.makedirs(folder, exist_ok=True)
+        return pd.DataFrame()
+
+    for root, _, files in os.walk(folder):
+        for fname in files:
+            if not fname.lower().endswith(".csv"):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                df = pd.read_csv(fpath)
+                # унифицируем имена колонок: если исходный Excel дал 'Количество' -> переименовываем
+                if "Количество" in df.columns and "Остаток" not in df.columns:
+                    df.rename(columns={"Количество": "Остаток"}, inplace=True)
+                frames.append(df)
+            except Exception as e:
+                logging.exception(f"[load_new_uploads_local] Ошибка чтения {fpath}: {e}")
+
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def load_combined_2025():
+    """
+    Объединяет данные из архива (функция load_and_prepare_2025_from_url)
+    и локальные новые загрузки (data/new_uploads).
+    Возвращает DataFrame, уже пройденный через add_canonical_name и calculate_daily_metrics.
+    """
+    # архив с github (существующая функция)
+    try:
+        df_archive = load_and_prepare_2025_from_url()
+    except Exception:
+        logging.exception("[load_combined_2025] Ошибка при загрузке архива с GitHub")
+        df_archive = pd.DataFrame()
+
+    # локальные загрузки
+    df_new = load_new_uploads_local()
+
+    if df_archive.empty and df_new.empty:
+        return pd.DataFrame()
+
+    # объединяем (архив + локальные новые)
+    if df_archive.empty:
+        df = df_new.copy()
+    elif df_new.empty:
+        df = df_archive.copy()
+    else:
+        df = pd.concat([df_archive, df_new], ignore_index=True, sort=False)
+
+    # базовая унификация
+    # если колонка "Количество" есть в локальных, переименовали выше; на всякий случай:
+    if "Остаток" not in df.columns and "Количество" in df.columns:
+        df["Остаток"] = df["Количество"]
+
+    # приведения типов (как в вашей оригинальной функции)
+    df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
+    df["Артикул"] = df["Артикул"].astype(str).str.strip()
+    df["Номенклатура"] = df["Номенклатура"].astype(str).str.strip()
+    df["Остаток"] = pd.to_numeric(df["Остаток"], errors="coerce")
+    if "Цена" in df.columns:
+        df["Цена"] = pd.to_numeric(df["Цена"], errors="coerce")
+    else:
+        df["Цена"] = np.nan
+
+    # отбрасываем некорректные строки
+    df = df.dropna(subset=["Дата", "Артикул", "Остаток"]).copy()
+
+    # ваша обработка
+    df = add_canonical_name(df)
+    df = calculate_daily_metrics(df)
+    return df
 # --- Загружаем данные ---
-df_2025 = load_and_prepare_2025_from_url()
-df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
+df_2025 = load_combined_2025()
+if df_2025.empty:
+    logging.warning("Нет данных после объединения архива и new_uploads")
+    df_2025_clean = pd.DataFrame()
+else:
+    df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
 
-# --- Уникальные значения для фильтров ---
-unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist())
-unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].dropna().astype(str).unique().tolist())
-unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].dropna().unique().tolist())
+# --- Уникальные значения для фильтров (если df_2025_clean пуст, оставьте пустые списки) ---
+unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist()) if not df_2025_clean.empty else []
+unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].dropna().astype(str).unique().tolist()) if not df_2025_clean.empty else []
+unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].dropna().unique().tolist()) if not df_2025_clean.empty else []
 # --------------------
 # DASH APP
 # --------------------
@@ -504,40 +582,54 @@ def load_aggregated_2025_from_local(folder="tmp_aggregated") -> pd.DataFrame:
     Output("article-2025-filter", "options"),
     Output("nom-2025-filter", "options"),
     Input("upload-data", "contents"),
-    State("upload-data", "filename")
+    State("upload-data", "filename"),
 )
 def upload_2025_file(contents, filename):
     if contents is None:
         raise dash.exceptions.PreventUpdate
 
+    # сохраняем временно загруженный файл
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
 
-    tmp_path = os.path.join("tmp_uploaded", filename)
-    os.makedirs("tmp_uploaded", exist_ok=True)
+    tmp_dir = "tmp_uploaded"
+    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_path = os.path.join(tmp_dir, filename)
     with open(tmp_path, "wb") as f:
         f.write(decoded)
 
-    # --- обработка нового файла ---
-    added_rows, error_msg = process_new_file(tmp_path)
+    # обрабатываем (process_new_file должен возвращать (added_rows, error_msg))
+    try:
+        added_rows, error_msg = process_new_file(tmp_path, output_folder=NEW_UPLOADS_FOLDER, repo_path=".")
+    except TypeError:
+        # на случай, если функция старого вида возвращала только число
+        res = process_new_file(tmp_path)
+        if isinstance(res, tuple):
+            added_rows, error_msg = res
+        else:
+            added_rows, error_msg = res, None
 
     if error_msg:
         return error_msg, dash.no_update, dash.no_update, dash.no_update
 
     if added_rows == 0:
+        # обновим список опций (вдруг структура папки поменялась) — но можно и не обновлять
         return f"Файл {filename} обработан, но новых данных не найдено", dash.no_update, dash.no_update, dash.no_update
 
-    # --- Загружаем агрегированные данные ---
-    global df_2025_clean
-    df_2025 = load_aggregated_2025_from_local("tmp_aggregated")
+    # Пересобираем объединённый DataFrame и обновляем опции
+    global df_2025_clean, unique_sklads_2025, unique_articles_2025, unique_noms_2025
+    df_2025 = load_combined_2025()
     if df_2025.empty:
-        return "Ошибка: после обработки файла данные отсутствуют", dash.no_update, dash.no_update, dash.no_update
+        return "Ошибка: после обработки данные отсутствуют", dash.no_update, dash.no_update, dash.no_update
 
     df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
+    unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist())
+    unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].dropna().astype(str).unique().tolist())
+    unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].dropna().unique().tolist())
 
-    sklads_options = [{'label': s, 'value': s} for s in sorted(df_2025_clean['Склад'].unique())]
-    articles_options = [{'label': a, 'value': a} for a in sorted(df_2025_clean['Артикул_товар'].unique())]
-    noms_options = [{'label': n, 'value': n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
+    sklads_options = [{'label': s, 'value': s} for s in unique_sklads_2025]
+    articles_options = [{'label': a, 'value': a} for a in unique_articles_2025]
+    noms_options = [{'label': n, 'value': n} for n in unique_noms_2025]
 
     return f"Файл {filename} успешно добавлен: {added_rows} строк", sklads_options, articles_options, noms_options
 # ------------------- Колбэк графика -------------------
