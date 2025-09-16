@@ -190,15 +190,18 @@ def load_and_prepare_2025_from_url(url: str = ARCHIVE_URL) -> pd.DataFrame:
 
                     frames.append(df)
         logging.info(f"[load_and_prepare_2025_from_url] Загружено файлов: {len(frames)}")
+        print(f"[load_and_prepare_2025_from_url] Загружено файлов: {len(frames)}")
     except Exception as e:
         logging.error(f"[load_and_prepare_2025_from_url] Ошибка загрузки архива: {e}", exc_info=True)
+        print(f"[load_and_prepare_2025_from_url] Ошибка загрузки архива: {e}")
 
     if not frames:
         return pd.DataFrame()
     df = pd.concat(frames, ignore_index=True)
     return unify_and_clean_df(df)
 
-# --- Объединённая загрузка данных (архив + новые через GitHub API) ---
+
+# --- Объединённая загрузка данных (архив + новый CSV с GitHub) ---
 def load_combined_2025() -> pd.DataFrame:
     print("[load_combined_2025] Вызов функции объединённой загрузки данных")
     logging.info("[load_combined_2025] Вызов функции объединённой загрузки данных")
@@ -214,39 +217,38 @@ def load_combined_2025() -> pd.DataFrame:
             logging.warning("[load_combined_2025] Нет данных в архиве")
             return pd.DataFrame()
 
-        # --- Загружаем новые файлы из GitHub ---
+        # --- Загружаем новый CSV (единый файл) ---
         g = Github(GITHUB_TOKEN)
         repo = g.get_repo(GITHUB_REPO)
-
-        all_new_parts = []
+        new_csv_path = "data/new_uploads/new_data.csv"  # путь на GitHub к единому CSV
+        df_new = pd.DataFrame()
         try:
-            contents = repo.get_contents("data/new_uploads", ref=GITHUB_BRANCH)
+            content_file = repo.get_contents(new_csv_path, ref=GITHUB_BRANCH)
+            csv_data = content_file.decoded_content.decode("utf-8")
+            df_new = pd.read_csv(io.StringIO(csv_data))
+            print(f"[load_combined_2025] Загружен новый CSV, строк: {len(df_new)}")
+            logging.info(f"[load_combined_2025] Загружен новый CSV, строк: {len(df_new)}")
         except Exception as e:
-            print(f"[load_combined_2025] Папка data/new_uploads не найдена: {e}")
-            logging.warning(f"[load_combined_2025] Папка data/new_uploads не найдена: {e}")
-            contents = []
+            print(f"[load_combined_2025] Новый CSV не найден: {e}")
+            logging.warning(f"[load_combined_2025] Новый CSV не найден: {e}")
 
-        while contents:
-            file_content = contents.pop(0)
-            if file_content.type == "dir":
-                contents.extend(repo.get_contents(file_content.path, ref=GITHUB_BRANCH))
-            elif file_content.type == "file" and file_content.path.endswith(".csv"):
-                try:
-                    csv_data = file_content.decoded_content.decode("utf-8")
-                    df_part = pd.read_csv(io.StringIO(csv_data))
-                    print(f"[load_combined_2025] Загружен файл {file_content.path}, строк: {len(df_part)}")
-                    logging.info(f"[load_combined_2025] Загружен файл {file_content.path}, строк: {len(df_part)}")
-                    all_new_parts.append(df_part)
-                except Exception as e:
-                    print(f"[load_combined_2025] Ошибка чтения {file_content.path}: {e}")
-                    logging.error(f"[load_combined_2025] Ошибка чтения {file_content.path}: {e}", exc_info=True)
+        # --- Разбиваем новый CSV по артикулу и добавляем к архиву ---
+        if not df_new.empty:
+            new_frames = []
+            for article, df_article in df_new.groupby("Артикул"):
+                df_article_existing = df_archive[df_archive["Артикул"] == article]
+                df_combined = pd.concat([df_article_existing, df_article], ignore_index=True)
+                new_frames.append(df_combined)
+            df_new_combined = pd.concat(new_frames, ignore_index=True)
+        else:
+            df_new_combined = pd.DataFrame()
 
-        df_new = pd.concat(all_new_parts, ignore_index=True) if all_new_parts else pd.DataFrame()
-        print(f"[load_combined_2025] Всего новых строк: {len(df_new)}")
-        logging.info(f"[load_combined_2025] Всего новых строк: {len(df_new)}")
+        # --- Объединяем архив и новые данные ---
+        if not df_new_combined.empty:
+            df = pd.concat([df_archive, df_new_combined], ignore_index=True)
+        else:
+            df = df_archive
 
-        # --- Объединяем архив и новые ---
-        df = pd.concat([df_archive, df_new], ignore_index=True)
         print(f"[load_combined_2025] После объединения строк: {len(df)}")
         logging.info(f"[load_combined_2025] После объединения строк: {len(df)}")
 
@@ -292,11 +294,10 @@ def github_upload_file(local_path: str, target_path: str, commit_message: str):
         logging.error(f"[github_upload_file] Ошибка загрузки {target_path} в GitHub: {e}", exc_info=True)
         return False
 
-# --- Загрузка данных при старте ---
+# --- Инициализация глобальных переменных ---
 df_2025 = load_combined_2025()
 df_2025_clean = df_2025[~df_2025["Аномалия"]].copy() if not df_2025.empty else pd.DataFrame()
 
-# --- Уникальные значения для фильтров (если df_2025_clean пуст, оставьте пустые списки) ---
 unique_sklads_2025 = sorted(df_2025_clean["Склад"].dropna().unique().tolist()) if not df_2025_clean.empty else []
 unique_articles_2025 = sorted(df_2025_clean["Артикул_товар"].dropna().astype(str).unique().tolist()) if not df_2025_clean.empty else []
 unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].dropna().unique().tolist()) if not df_2025_clean.empty else []
