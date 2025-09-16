@@ -23,7 +23,7 @@ import traceback
 import base64
 from dash.exceptions import PreventUpdate
 from data_uploader import process_new_file, read_excel_file, safe_filename
-from github import Github
+from github import Github, InputGitTreeElement
 # --------------------
 # НАСТРОЙКИ
 # --------------------
@@ -535,7 +535,6 @@ def normalize_dataframe(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return df
 
 
-# --- Колбэк загрузки файла через Dash ---
 @app.callback(
     Output("upload-status", "children"),
     Output("sklad-2025-filter", "options"),
@@ -562,77 +561,65 @@ def upload_2025_file(contents, filename):
     if df_new is None or df_new.empty:
         return f"Файл {filename} пуст или некорректен", dash.no_update, dash.no_update, dash.no_update
 
-    # --- Обработка пустых артикулов ---
-    empty_mask = df_new["Артикул"].isna() | (df_new["Артикул"].astype(str).str.strip() == "")
-    unknown_counter = 1
-    for idx in df_new[empty_mask].index:
-        df_new.at[idx, "Артикул"] = f"UNKNOWN_{unknown_counter}"
-        unknown_counter += 1
-
-    # --- Приведение типов ---
-    df_new["Артикул"] = df_new["Артикул"].astype(str).str.strip()
-    df_new["Номенклатура"] = df_new["Номенклатура"].astype(str).str.strip()
-    df_new["Дата"] = pd.to_datetime(df_new["Дата"], errors="coerce")
-    df_new["Остаток"] = pd.to_numeric(df_new["Остаток"], errors="coerce")
-    df_new["Цена"] = pd.to_numeric(df_new["Цена"], errors="coerce") if "Цена" in df_new.columns else np.nan
-
-    # --- Подключаем GitHub ---
+    # --- Готовим батч для коммита ---
     g = Github(GITHUB_TOKEN)
     repo = g.get_repo(GITHUB_REPO)
+    master_ref = repo.get_git_ref(f"heads/{GITHUB_BRANCH}")
+    base_tree = repo.get_git_tree(master_ref.object.sha)
 
-    added_rows_total = 0
-    added_files_total = 0
+    elements = []
+    added_rows = 0
 
-    # --- Группировка по складу и артикулу ---
-    for (sklad, article), group in df_new.groupby(["Склад", "Артикул"]):
+    for (sklad, article), group in df_new.groupby(["Склад", "Артикул"], dropna=False):
+        if pd.isna(article) or str(article).strip() == "":
+            article = f"NOARTICLE_{uuid.uuid4().hex[:8]}"
+
         remote_path = f"data/new_uploads/{safe_filename(sklad)}/{safe_filename(article)}.csv"
-        os.makedirs(os.path.join(TMP_UPLOAD_PATH, safe_filename(sklad)), exist_ok=True)
 
-        # --- Проверка существующего файла на GitHub ---
         try:
             file_content = repo.get_contents(remote_path, ref=GITHUB_BRANCH)
             df_existing = pd.read_csv(io.StringIO(file_content.decoded_content.decode("utf-8")))
-            max_date = pd.to_datetime(df_existing["Дата"], errors="coerce").max()
-            group_to_add = group[pd.to_datetime(group["Дата"]) > max_date]
+            max_date = pd.to_datetime(df_existing["Дата"])
+            group = group[pd.to_datetime(group["Дата"]) > max_date.max()]
         except Exception:
-            # Файл ещё не существует → загружаем весь group
-            group_to_add = group.copy()
+            # Файл не существует → берём всё
+            pass
 
-        if not group_to_add.empty:
-            csv_bytes = group_to_add.to_csv(index=False, encoding="utf-8-sig").encode("utf-8")
-            commit_msg = f"Добавление новых данных: {filename}, {len(group_to_add)} строк"
-            try:
-                # обновляем файл, если есть
-                try:
-                    file_content = repo.get_contents(remote_path, ref=GITHUB_BRANCH)
-                    repo.update_file(remote_path, commit_msg, csv_bytes, sha=file_content.sha, branch=GITHUB_BRANCH)
-                except Exception:
-                    # создаём файл
-                    repo.create_file(remote_path, commit_msg, csv_bytes, branch=GITHUB_BRANCH)
-                    added_files_total += 1
+        if not group.empty:
+            csv_bytes = group.to_csv(index=False, encoding="utf-8-sig")
+            element = InputGitTreeElement(
+                path=remote_path,
+                mode='100644',
+                type='blob',
+                content=csv_bytes
+            )
+            elements.append(element)
+            added_rows += len(group)
 
-                added_rows_total += len(group_to_add)
-                logging.info(f"[upload_2025_file] {len(group_to_add)} строк добавлено в {remote_path}")
-            except Exception as e:
-                logging.error(f"[upload_2025_file] Ошибка загрузки {remote_path} в GitHub: {e}", exc_info=True)
-                return f"Ошибка загрузки в GitHub: {e}", dash.no_update, dash.no_update, dash.no_update
+    if not elements:
+        return f"Файл {filename} обработан, новых данных нет", dash.no_update, dash.no_update, dash.no_update
+
+    # --- Делаем один коммит с пачкой файлов ---
+    tree = repo.create_git_tree(elements, base_tree)
+    parent = repo.get_git_commit(master_ref.object.sha)
+    commit = repo.create_git_commit(f"Загрузка {filename}: {added_rows} строк", tree, [parent])
+    master_ref.edit(commit.sha)
+
+    logging.info(f"[upload_2025_file] Загружено {added_rows} строк одним коммитом")
 
     # --- Обновляем глобальный DataFrame ---
     global df_2025_clean
     df_2025 = load_combined_2025()
     if df_2025.empty:
-        return "Ошибка: после обработки файла данные отсутствуют", dash.no_update, dash.no_update, dash.no_update
+        return "Ошибка: данные отсутствуют после загрузки", dash.no_update, dash.no_update, dash.no_update
     df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
 
-    # --- Формируем options для фильтров ---
+    # --- Фильтры ---
     sklads_options = [{"label": s, "value": s} for s in sorted(df_2025_clean['Склад'].unique())]
     articles_options = [{"label": a, "value": a} for a in sorted(df_2025_clean['Артикул_товар'].astype(str).unique())]
     noms_options = [{"label": n, "value": n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
 
-    if added_rows_total == 0:
-        return f"Файл {filename} обработан, но новых данных не найдено", sklads_options, articles_options, noms_options
-    return f"Файл {filename} успешно добавлен: {added_rows_total} строк, {added_files_total} новых файлов", \
-           sklads_options, articles_options, noms_options
+    return f"Файл {filename} успешно добавлен: {added_rows} строк", sklads_options, articles_options, noms_options
 # ------------------- Колбэк графика -------------------
 @app.callback(
     Output("graph-2025-line", "figure"),
