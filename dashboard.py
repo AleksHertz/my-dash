@@ -198,10 +198,17 @@ def load_and_prepare_2025_from_url(url: str = ARCHIVE_URL) -> pd.DataFrame:
 
 # --- Объединённая загрузка данных (архив + новые через GitHub API) ---
 def load_combined_2025() -> pd.DataFrame:
+    print("[load_combined_2025] Вызов функции объединённой загрузки данных")
+    logging.info("[load_combined_2025] Вызов функции объединённой загрузки данных")
+
     try:
         # --- Загружаем архив ---
         df_archive = load_and_prepare_2025_from_url()
+        print(f"[load_combined_2025] Архив загружен, строк: {len(df_archive)}")
+        logging.info(f"[load_combined_2025] Архив загружен, строк: {len(df_archive)}")
+
         if df_archive.empty:
+            print("[load_combined_2025] Нет данных в архиве")
             logging.warning("[load_combined_2025] Нет данных в архиве")
             return pd.DataFrame()
 
@@ -210,7 +217,12 @@ def load_combined_2025() -> pd.DataFrame:
         repo = g.get_repo(GITHUB_REPO)
 
         all_new_parts = []
-        contents = repo.get_contents("data/new_uploads", ref=GITHUB_BRANCH)
+        try:
+            contents = repo.get_contents("data/new_uploads", ref=GITHUB_BRANCH)
+        except Exception as e:
+            print(f"[load_combined_2025] Папка data/new_uploads не найдена: {e}")
+            logging.warning(f"[load_combined_2025] Папка data/new_uploads не найдена: {e}")
+            contents = []
 
         while contents:
             file_content = contents.pop(0)
@@ -220,17 +232,21 @@ def load_combined_2025() -> pd.DataFrame:
                 try:
                     csv_data = file_content.decoded_content.decode("utf-8")
                     df_part = pd.read_csv(io.StringIO(csv_data))
+                    print(f"[load_combined_2025] Загружен файл {file_content.path}, строк: {len(df_part)}")
+                    logging.info(f"[load_combined_2025] Загружен файл {file_content.path}, строк: {len(df_part)}")
                     all_new_parts.append(df_part)
                 except Exception as e:
+                    print(f"[load_combined_2025] Ошибка чтения {file_content.path}: {e}")
                     logging.error(f"[load_combined_2025] Ошибка чтения {file_content.path}: {e}", exc_info=True)
 
-        if all_new_parts:
-            df_new = pd.concat(all_new_parts, ignore_index=True)
-        else:
-            df_new = pd.DataFrame()
+        df_new = pd.concat(all_new_parts, ignore_index=True) if all_new_parts else pd.DataFrame()
+        print(f"[load_combined_2025] Всего новых строк: {len(df_new)}")
+        logging.info(f"[load_combined_2025] Всего новых строк: {len(df_new)}")
 
         # --- Объединяем архив и новые ---
         df = pd.concat([df_archive, df_new], ignore_index=True)
+        print(f"[load_combined_2025] После объединения строк: {len(df)}")
+        logging.info(f"[load_combined_2025] После объединения строк: {len(df)}")
 
         # --- Приведение типов ---
         if "Дата" in df.columns:
@@ -238,16 +254,21 @@ def load_combined_2025() -> pd.DataFrame:
 
         # --- Убираем дубликаты ---
         if all(col in df.columns for col in ["Склад", "Артикул", "Дата"]):
+            before = len(df)
             df.drop_duplicates(subset=["Склад", "Артикул", "Дата"], inplace=True)
+            print(f"[load_combined_2025] Убрано дубликатов: {before - len(df)}")
+            logging.info(f"[load_combined_2025] Убрано дубликатов: {before - len(df)}")
 
         # --- Дополнительная обработка ---
         df = add_canonical_name(df)
         df = calculate_daily_metrics(df)
 
-        logging.info(f"[load_combined_2025] Загружено строк: {len(df)}")
+        print(f"[load_combined_2025] Финальный размер: {len(df)} строк")
+        logging.info(f"[load_combined_2025] Финальный размер: {len(df)} строк")
         return df
 
     except Exception as e:
+        print(f"[load_combined_2025] Общая ошибка: {e}")
         logging.error(f"[load_combined_2025] Общая ошибка: {e}", exc_info=True)
         return pd.DataFrame()
 
