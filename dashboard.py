@@ -620,41 +620,53 @@ def upload_2025_file(contents, filename):
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
 
-        # Чтение Excel
-        df_new = pd.read_excel(io.BytesIO(decoded))
+        # Создаём временный файл
+        os.makedirs(TMP_UPLOAD_PATH, exist_ok=True)
+        tmp_path = os.path.join(TMP_UPLOAD_PATH, filename)
+        with open(tmp_path, "wb") as f:
+            f.write(decoded)
+        print(f"[upload_2025_file] Файл сохранён временно: {tmp_path}")
+
+        # --- Чтение Excel через нашу функцию ---
+        df_new = read_excel_file(tmp_path, sklad_name="auto")
+        if df_new is None or df_new.empty:
+            print("[upload_2025_file] После чтения Excel df_new пустой")
+            return f"Файл {filename} пуст или некорректен"
+
         print(f"[upload_2025_file] Прочитано строк из Excel: {len(df_new)}")
 
-        # Проверка на дату
-        if "Дата" not in df_new.columns:
-            print("[upload_2025_file] В файле нет колонки 'Дата'")
-            return "Ошибка: нет колонки 'Дата'"
+        # --- Подключение к GitHub ---
+        g = Github(GITHUB_TOKEN)
+        repo = g.get_repo(GITHUB_REPO)
 
-        df_new["Дата"] = pd.to_datetime(df_new["Дата"], errors="coerce")
-        if df_new["Дата"].isna().all():
-            print("[upload_2025_file] Все даты пустые после преобразования")
-            return "Ошибка: некорректные даты"
+        added_rows = 0
+        for (sklad, article), group in df_new.groupby(["Склад", "Артикул"]):
+            remote_path = f"data/new_uploads/{safe_filename(sklad)}/{safe_filename(article)}.csv"
+            try:
+                file_content = repo.get_contents(remote_path, ref=GITHUB_BRANCH)
+                df_existing = pd.read_csv(io.StringIO(file_content.decoded_content.decode("utf-8")))
+                max_date = pd.to_datetime(df_existing["Дата"]).max()
+                group = group[pd.to_datetime(group["Дата"]) > max_date]
+            except Exception:
+                # Файл ещё не существует → загружаем весь group
+                pass
 
-        new_date = df_new["Дата"].max().strftime("%Y-%m-%d")
-        print(f"[upload_2025_file] Дата в файле: {new_date}")
+            if not group.empty:
+                csv_bytes = group.to_csv(index=False, encoding="utf-8-sig").encode("utf-8")
+                commit_msg = f"Добавление новых данных: {filename}, {len(group)} строк"
+                try:
+                    try:
+                        file_content = repo.get_contents(remote_path, ref=GITHUB_BRANCH)
+                        repo.update_file(remote_path, commit_msg, csv_bytes, sha=file_content.sha, branch=GITHUB_BRANCH)
+                    except Exception:
+                        repo.create_file(remote_path, commit_msg, csv_bytes, branch=GITHUB_BRANCH)
+                    added_rows += len(group)
+                    print(f"[upload_2025_file] Добавлено {len(group)} строк в {remote_path}")
+                except Exception as e:
+                    print(f"[upload_2025_file] Ошибка загрузки {remote_path}: {e}")
+                    return f"Ошибка загрузки в GitHub: {e}"
 
-        # Имя файла в GitHub
-        target_path = f"data/new_uploads/upload_{new_date}.xlsx"
-
-        # Загружаем в GitHub
-        try:
-            file_content = repo.get_contents(target_path, ref=GITHUB_BRANCH)
-            print(f"[upload_2025_file] Файл {target_path} уже существует в репозитории")
-            return f"Файл за {new_date} уже существует"
-        except Exception:
-            repo.create_file(
-                path=target_path,
-                message=f"Добавлен файл с новыми данными за {new_date}",
-                content=decoded,
-                branch=GITHUB_BRANCH
-            )
-            print(f"[upload_2025_file] Файл {target_path} успешно загружен")
-
-        return f"Файл за {new_date} успешно загружен"
+        return f"Файл {filename} успешно добавлен: {added_rows} строк" if added_rows > 0 else f"Файл {filename} обработан, но новых данных не найдено"
 
     except Exception as e:
         print(f"[upload_2025_file] Ошибка: {e}")
