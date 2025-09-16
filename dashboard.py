@@ -603,7 +603,7 @@ def normalize_dataframe(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return df
 
 
-# === Callback для загрузки файла на вкладке "Анализ 2025" ===
+# --- Колбэк загрузки файла через Dash с локальным сохранением CSV ---
 @app.callback(
     Output("upload-status", "children"),
     Output("sklad-2025-filter", "options"),
@@ -639,29 +639,18 @@ def upload_2025_file(contents, filename):
     logging.info(f"[upload_2025_file] Прочитано строк из Excel: {len(df_new)}")
     print(f"[upload_2025_file] Прочитано строк из Excel: {len(df_new)}")
 
-    # --- Разбор даты (ячейка А2) ---
+    # --- Разбор даты (ячейка A2) ---
     if 'Дата' not in df_new.columns:
         df_new['Дата'] = pd.to_datetime(df_new.iloc[1, 0], dayfirst=True)
         logging.info(f"[upload_2025_file] Дата взята из ячейки A2: {df_new['Дата'].iloc[0]}")
         print(f"[upload_2025_file] Дата взята из ячейки A2: {df_new['Дата'].iloc[0]}")
 
-    # --- Сохраняем новые строки в локальные CSV ---
-    total_new_files = 0
-    for _, row in df_new.iterrows():
-        sklad = str(row.get('Склад', 'Неизвестно')).strip() or 'Неизвестно'
-        article = str(row.get('Артикул', 'empty')).strip() or 'empty'
-
-        folder_path = os.path.join(TMP_UPLOAD_PATH, "new_uploads", safe_filename(sklad))
-        os.makedirs(folder_path, exist_ok=True)
-
-        file_path = os.path.join(folder_path, f"{safe_filename(article)}.csv")
-
-        row_df = pd.DataFrame([row])
-        row_df.to_csv(file_path, index=False, encoding="utf-8-sig")
-
-        total_new_files += 1
-        logging.info(f"[upload_2025_file] Добавлено {len(row_df)} строк в {file_path}")
-        print(f"[upload_2025_file] Добавлено {len(row_df)} строк в {file_path}")
+    # --- Сохраняем все новые строки в один CSV ---
+    new_csv_path = os.path.join(TMP_UPLOAD_PATH, "new_uploads.csv")
+    os.makedirs(os.path.dirname(new_csv_path), exist_ok=True)
+    df_new.to_csv(new_csv_path, index=False, encoding="utf-8-sig")
+    logging.info(f"[upload_2025_file] Все строки сохранены в один CSV: {new_csv_path}")
+    print(f"[upload_2025_file] Все строки сохранены в один CSV: {new_csv_path}")
 
     # --- Обновляем глобальный DataFrame ---
     global df_2025_clean
@@ -678,72 +667,44 @@ def upload_2025_file(contents, filename):
     articles_options = [{"label": a, "value": a} for a in sorted(df_2025_clean['Артикул_товар'].astype(str).unique())]
     noms_options = [{"label": n, "value": n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
 
-    msg = f"Файл {filename} обработан: добавлено {total_new_files} локальных CSV"
+    msg = f"Файл {filename} обработан: добавлено {len(df_new)} строк в единый CSV"
     logging.info(f"[upload_2025_file] {msg}")
     print(f"[upload_2025_file] {msg}")
 
-    # --- Запуск фоновой загрузки на GitHub пачками ---
-    import threading
-    threading.Thread(target=upload_new_csv_to_github, args=(TMP_UPLOAD_PATH,), daemon=True).start()
+    # --- Запуск фоновой загрузки на GitHub ---
+    threading.Thread(target=upload_new_csv_to_github, args=(new_csv_path,), daemon=True).start()
 
     return msg, sklads_options, articles_options, noms_options
 
 
-# --- Фоновая функция загрузки CSV на GitHub пачками ---
-def upload_new_csv_to_github(base_path: str, batch_size: int = 20, delay: float = 1.0):
+# --- Фоновая функция загрузки CSV на GitHub ---
+def upload_new_csv_to_github(csv_path: str):
     logging.info("[upload_new_csv_to_github] Старт фоновой загрузки CSV на GitHub")
     print("[upload_new_csv_to_github] Старт фоновой загрузки CSV на GitHub")
 
     g = Github(GITHUB_TOKEN)
     repo = g.get_repo(GITHUB_REPO)
 
-    new_uploads_path = os.path.join(base_path, "new_uploads")
-    all_files = []
-    for root, _, files in os.walk(new_uploads_path):
-        for file in files:
-            if file.endswith(".csv"):
-                local_file = os.path.join(root, file)
-                relative_path = os.path.relpath(local_file, base_path).replace("\\", "/")
-                all_files.append((local_file, relative_path))
+    filename = os.path.basename(csv_path)
+    relative_path = f"data/new_uploads/{filename}"
 
-    total_files = len(all_files)
-    logging.info(f"[upload_new_csv_to_github] Всего файлов для загрузки: {total_files}")
-    print(f"[upload_new_csv_to_github] Всего файлов для загрузки: {total_files}")
+    with open(csv_path, "rb") as f:
+        content = f.read()
 
-    for i in range(0, total_files, batch_size):
-        batch = all_files[i:i+batch_size]
-        for local_file, relative_path in batch:
-            with open(local_file, "rb") as f:
-                content = f.read()
-            commit_msg = f"Добавление новых данных: {os.path.basename(local_file)}"
-            try:
-                existing_file = None
-                try:
-                    existing_file = repo.get_contents(relative_path, ref=GITHUB_BRANCH)
-                except:
-                    pass
-
-                if existing_file:
-                    repo.update_file(relative_path, commit_msg, content, sha=existing_file.sha, branch=GITHUB_BRANCH)
-                    logging.info(f"[upload_new_csv_to_github] Обновлён файл {relative_path}")
-                    print(f"[upload_new_csv_to_github] Обновлён файл {relative_path}")
-                else:
-                    repo.create_file(relative_path, commit_msg, content, branch=GITHUB_BRANCH)
-                    logging.info(f"[upload_new_csv_to_github] Создан файл {relative_path}")
-                    print(f"[upload_new_csv_to_github] Создан файл {relative_path}")
-
-            except Exception as e:
-                logging.error(f"[upload_new_csv_to_github] Ошибка загрузки {relative_path}: {e}", exc_info=True)
-                print(f"[upload_new_csv_to_github] Ошибка загрузки {relative_path}: {e}")
-
-        # Таймаут после каждой пачки
-        if i + batch_size < total_files:
-            logging.info(f"[upload_new_csv_to_github] Загрузка {i+1}-{i+len(batch)} файлов завершена. Ждём {delay} сек...")
-            print(f"[upload_new_csv_to_github] Загрузка {i+1}-{i+len(batch)} файлов завершена. Ждём {delay} сек...")
-            time.sleep(delay)
-
-    logging.info(f"[upload_new_csv_to_github] Загрузка всех файлов завершена")
-    print(f"[upload_new_csv_to_github] Загрузка всех файлов завершена")
+    commit_msg = f"Добавление новых данных: {filename}"
+    try:
+        try:
+            existing_file = repo.get_contents(relative_path, ref=GITHUB_BRANCH)
+            repo.update_file(relative_path, commit_msg, content, sha=existing_file.sha, branch=GITHUB_BRANCH)
+            logging.info(f"[upload_new_csv_to_github] Обновлён файл {relative_path}")
+            print(f"[upload_new_csv_to_github] Обновлён файл {relative_path}")
+        except Exception:
+            repo.create_file(relative_path, commit_msg, content, branch=GITHUB_BRANCH)
+            logging.info(f"[upload_new_csv_to_github] Создан файл {relative_path}")
+            print(f"[upload_new_csv_to_github] Создан файл {relative_path}")
+    except Exception as e:
+        logging.error(f"[upload_new_csv_to_github] Ошибка загрузки {relative_path}: {e}", exc_info=True)
+        print(f"[upload_new_csv_to_github] Ошибка загрузки {relative_path}: {e}")
 # ------------------- Колбэк графика -------------------
 @app.callback(
     Output("graph-2025-line", "figure"),
