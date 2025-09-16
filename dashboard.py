@@ -602,82 +602,63 @@ def normalize_dataframe(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return df
 
 
+# === Callback для загрузки файла на вкладке "Анализ 2025" ===
 @app.callback(
-    Output("upload-status-2025", "children"),
-    Input("upload-2025", "contents"),
-    State("upload-2025", "filename"),
+    Output("upload-status", "children"),
+    Input("upload-data", "contents"),
+    State("upload-data", "filename"),
     prevent_initial_call=True
 )
 def upload_2025_file(contents, filename):
-    print(f"[upload_2025_file] Получен вызов колбэка, filename={filename}")
-    logging.info(f"[upload_2025_file] Получен вызов колбэка, filename={filename}")
+    print(f"[upload_2025_file] Вызов: filename={filename}, contents={contents is not None}")
 
     if contents is None:
-        print("[upload_2025_file] Нет contents → возврат")
-        return "Файл не загружен"
+        print("[upload_2025_file] Нет содержимого файла")
+        return "Файл не получен"
 
     try:
-        content_type, content_string = contents.split(",")
+        content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
-        print(f"[upload_2025_file] Файл успешно декодирован, размер={len(decoded)} байт")
 
-        # --- Читаем Excel ---
-        df = pd.read_excel(io.BytesIO(decoded))
-        print(f"[upload_2025_file] Excel загружен в DataFrame, строк={len(df)}")
-        logging.info(f"[upload_2025_file] Excel загружен в DataFrame, строк={len(df)}")
+        # Чтение Excel
+        df_new = pd.read_excel(io.BytesIO(decoded))
+        print(f"[upload_2025_file] Прочитано строк из Excel: {len(df_new)}")
 
-        # --- Проверка обязательных колонок ---
-        required_cols = ["Склад", "Артикул", "Дата"]
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing:
-            print(f"[upload_2025_file] ❌ Нет колонок: {missing}")
-            logging.error(f"[upload_2025_file] Нет колонок: {missing}")
-            return f"Ошибка: нет колонок {missing}"
+        # Проверка на дату
+        if "Дата" not in df_new.columns:
+            print("[upload_2025_file] В файле нет колонки 'Дата'")
+            return "Ошибка: нет колонки 'Дата'"
 
-        # --- Чистим NaN в артикуле ---
-        df["Артикул"] = df["Артикул"].fillna("UNKNOWN")
-        print(f"[upload_2025_file] После fillna: уникальных артикулов={df['Артикул'].nunique()}")
+        df_new["Дата"] = pd.to_datetime(df_new["Дата"], errors="coerce")
+        if df_new["Дата"].isna().all():
+            print("[upload_2025_file] Все даты пустые после преобразования")
+            return "Ошибка: некорректные даты"
 
-        # --- Сохраняем в GitHub ---
-        g = Github(GITHUB_TOKEN)
-        repo = g.get_repo(GITHUB_REPO)
-        print(f"[upload_2025_file] Соединение с GitHub установлено → {GITHUB_REPO}")
+        new_date = df_new["Дата"].max().strftime("%Y-%m-%d")
+        print(f"[upload_2025_file] Дата в файле: {new_date}")
 
-        # Делаем путь для сохранения
-        date_str = pd.to_datetime(df["Дата"].iloc[0]).strftime("%Y-%m-%d")
-        save_path = f"data/new_uploads/{date_str}_{filename.replace('.xlsx', '.csv')}"
-        print(f"[upload_2025_file] Путь для сохранения: {save_path}")
+        # Имя файла в GitHub
+        target_path = f"data/new_uploads/upload_{new_date}.xlsx"
 
-        csv_bytes = df.to_csv(index=False).encode("utf-8")
-
-        # Проверка — существует ли файл
+        # Загружаем в GitHub
         try:
-            existing_file = repo.get_contents(save_path, ref=GITHUB_BRANCH)
-            repo.update_file(
-                save_path,
-                f"Обновление {filename} ({date_str})",
-                csv_bytes,
-                existing_file.sha,
-                branch=GITHUB_BRANCH,
-            )
-            print(f"[upload_2025_file] ✅ Обновлён файл {save_path}")
-            logging.info(f"[upload_2025_file] Обновлён файл {save_path}")
+            file_content = repo.get_contents(target_path, ref=GITHUB_BRANCH)
+            print(f"[upload_2025_file] Файл {target_path} уже существует в репозитории")
+            return f"Файл за {new_date} уже существует"
         except Exception:
             repo.create_file(
-                save_path,
-                f"Добавление {filename} ({date_str})",
-                csv_bytes,
-                branch=GITHUB_BRANCH,
+                path=target_path,
+                message=f"Добавлен файл с новыми данными за {new_date}",
+                content=decoded,
+                branch=GITHUB_BRANCH
             )
-            print(f"[upload_2025_file] ✅ Создан новый файл {save_path}")
-            logging.info(f"[upload_2025_file] Создан новый файл {save_path}")
+            print(f"[upload_2025_file] Файл {target_path} успешно загружен")
 
-        return f"Файл {filename} успешно загружен ({len(df)} строк)"
+        return f"Файл за {new_date} успешно загружен"
 
     except Exception as e:
-        print(f"[upload_2025_file] ❌ Ошибка: {e}")
-        logging.error(f"[upload_2025_file] Ошибка: {e}", exc_info=True)
-        return f"Ошибка загрузки: {e}"
+        print(f"[upload_2025_file] Ошибка: {e}")
+        return f"Ошибка при загрузке: {str(e)}"
 # ------------------- Колбэк графика -------------------
 @app.callback(
     Output("graph-2025-line", "figure"),
