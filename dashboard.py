@@ -602,58 +602,82 @@ def normalize_dataframe(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return df
 
 
-logger = logging.getLogger(__name__)
+@app.callback(
+    Output("upload-status-2025", "children"),
+    Input("upload-2025", "contents"),
+    State("upload-2025", "filename"),
+    prevent_initial_call=True
+)
+def upload_2025_file(contents, filename):
+    print(f"[upload_2025_file] Получен вызов колбэка, filename={filename}")
+    logging.info(f"[upload_2025_file] Получен вызов колбэка, filename={filename}")
 
-def upload_2025_file(contents, filename, repo, GITHUB_BRANCH):
+    if contents is None:
+        print("[upload_2025_file] Нет contents → возврат")
+        return "Файл не загружен"
+
     try:
         content_type, content_string = contents.split(",")
         decoded = base64.b64decode(content_string)
-        df_new = pd.read_excel(io.BytesIO(decoded))
+        print(f"[upload_2025_file] Файл успешно декодирован, размер={len(decoded)} байт")
 
-        # Проверим, что есть нужные колонки
+        # --- Читаем Excel ---
+        df = pd.read_excel(io.BytesIO(decoded))
+        print(f"[upload_2025_file] Excel загружен в DataFrame, строк={len(df)}")
+        logging.info(f"[upload_2025_file] Excel загружен в DataFrame, строк={len(df)}")
+
+        # --- Проверка обязательных колонок ---
         required_cols = ["Склад", "Артикул", "Дата"]
-        for col in required_cols:
-            if col not in df_new.columns:
-                raise ValueError(f"Не найдена колонка: {col}")
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            print(f"[upload_2025_file] ❌ Нет колонок: {missing}")
+            logging.error(f"[upload_2025_file] Нет колонок: {missing}")
+            return f"Ошибка: нет колонок {missing}"
 
-        elements = []
-        added_rows = 0
+        # --- Чистим NaN в артикуле ---
+        df["Артикул"] = df["Артикул"].fillna("UNKNOWN")
+        print(f"[upload_2025_file] После fillna: уникальных артикулов={df['Артикул'].nunique()}")
 
-        for (sklad, article), group in df_new.groupby(["Склад", "Артикул"], dropna=False):
-            # Пустые артикулы заменяем на временный ID
-            if pd.isna(article) or str(article).strip() == "":
-                article = f"NOARTICLE_{uuid.uuid4().hex[:8]}"
+        # --- Сохраняем в GitHub ---
+        g = Github(GITHUB_TOKEN)
+        repo = g.get_repo(GITHUB_REPO)
+        print(f"[upload_2025_file] Соединение с GitHub установлено → {GITHUB_REPO}")
 
-            remote_path = f"data/new_uploads/{safe_filename(sklad)}/{safe_filename(article)}.csv"
+        # Делаем путь для сохранения
+        date_str = pd.to_datetime(df["Дата"].iloc[0]).strftime("%Y-%m-%d")
+        save_path = f"data/new_uploads/{date_str}_{filename.replace('.xlsx', '.csv')}"
+        print(f"[upload_2025_file] Путь для сохранения: {save_path}")
 
-            # Сохраняем все строки этой группы
-            csv_bytes = group.to_csv(index=False, encoding="utf-8-sig")
-            element = InputGitTreeElement(
-                path=remote_path,
-                mode='100644',
-                type='blob',
-                content=csv_bytes
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+
+        # Проверка — существует ли файл
+        try:
+            existing_file = repo.get_contents(save_path, ref=GITHUB_BRANCH)
+            repo.update_file(
+                save_path,
+                f"Обновление {filename} ({date_str})",
+                csv_bytes,
+                existing_file.sha,
+                branch=GITHUB_BRANCH,
             )
-            elements.append(element)
-            added_rows += len(group)
+            print(f"[upload_2025_file] ✅ Обновлён файл {save_path}")
+            logging.info(f"[upload_2025_file] Обновлён файл {save_path}")
+        except Exception:
+            repo.create_file(
+                save_path,
+                f"Добавление {filename} ({date_str})",
+                csv_bytes,
+                branch=GITHUB_BRANCH,
+            )
+            print(f"[upload_2025_file] ✅ Создан новый файл {save_path}")
+            logging.info(f"[upload_2025_file] Создан новый файл {save_path}")
 
-        if elements:
-            # Создаем дерево и коммит
-            base_tree = repo.get_git_tree(sha=GITHUB_BRANCH)
-            new_tree = repo.create_git_tree(elements, base_tree)
-            parent = repo.get_git_commit(repo.get_branch(GITHUB_BRANCH).commit.sha)
-            commit_message = f"Добавлен {filename}, строк: {added_rows}"
-            new_commit = repo.create_git_commit(commit_message, new_tree, [parent])
-            repo.get_git_ref(f"heads/{GITHUB_BRANCH}").edit(new_commit.sha)
-            logger.info(f"✅ Залито {added_rows} строк из {filename}")
-            return f"Файл {filename} обработан. Добавлено {added_rows} строк."
-        else:
-            logger.warning(f"⚠️ В {filename} не найдено новых данных")
-            return f"Файл {filename} не содержал данных."
+        return f"Файл {filename} успешно загружен ({len(df)} строк)"
 
     except Exception as e:
-        logger.error(f"Ошибка при загрузке {filename}: {e}", exc_info=True)
-        return f"Ошибка при обработке {filename}: {e}"
+        print(f"[upload_2025_file] ❌ Ошибка: {e}")
+        logging.error(f"[upload_2025_file] Ошибка: {e}", exc_info=True)
+        return f"Ошибка загрузки: {e}"
 # ------------------- Колбэк графика -------------------
 @app.callback(
     Output("graph-2025-line", "figure"),
