@@ -24,6 +24,7 @@ import base64
 from dash.exceptions import PreventUpdate
 from data_uploader import process_new_file, read_excel_file, safe_filename
 from github import Github, InputGitTreeElement
+import uuid
 # --------------------
 # НАСТРОЙКИ
 # --------------------
@@ -197,13 +198,58 @@ def load_and_prepare_2025_from_url(url: str = ARCHIVE_URL) -> pd.DataFrame:
 
 # --- Объединённая загрузка данных (архив + новые через GitHub API) ---
 def load_combined_2025() -> pd.DataFrame:
-    df_archive = load_and_prepare_2025_from_url()
-    if df_archive.empty:
-        logging.warning("[load_combined_2025] Нет данных в архиве")
+    try:
+        # --- Загружаем архив ---
+        df_archive = load_and_prepare_2025_from_url()
+        if df_archive.empty:
+            logging.warning("[load_combined_2025] Нет данных в архиве")
+            return pd.DataFrame()
+
+        # --- Загружаем новые файлы из GitHub ---
+        g = Github(GITHUB_TOKEN)
+        repo = g.get_repo(GITHUB_REPO)
+
+        all_new_parts = []
+        contents = repo.get_contents("data/new_uploads", ref=GITHUB_BRANCH)
+
+        while contents:
+            file_content = contents.pop(0)
+            if file_content.type == "dir":
+                contents.extend(repo.get_contents(file_content.path, ref=GITHUB_BRANCH))
+            elif file_content.type == "file" and file_content.path.endswith(".csv"):
+                try:
+                    csv_data = file_content.decoded_content.decode("utf-8")
+                    df_part = pd.read_csv(io.StringIO(csv_data))
+                    all_new_parts.append(df_part)
+                except Exception as e:
+                    logging.error(f"[load_combined_2025] Ошибка чтения {file_content.path}: {e}", exc_info=True)
+
+        if all_new_parts:
+            df_new = pd.concat(all_new_parts, ignore_index=True)
+        else:
+            df_new = pd.DataFrame()
+
+        # --- Объединяем архив и новые ---
+        df = pd.concat([df_archive, df_new], ignore_index=True)
+
+        # --- Приведение типов ---
+        if "Дата" in df.columns:
+            df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
+
+        # --- Убираем дубликаты ---
+        if all(col in df.columns for col in ["Склад", "Артикул", "Дата"]):
+            df.drop_duplicates(subset=["Склад", "Артикул", "Дата"], inplace=True)
+
+        # --- Дополнительная обработка ---
+        df = add_canonical_name(df)
+        df = calculate_daily_metrics(df)
+
+        logging.info(f"[load_combined_2025] Загружено строк: {len(df)}")
+        return df
+
+    except Exception as e:
+        logging.error(f"[load_combined_2025] Общая ошибка: {e}", exc_info=True)
         return pd.DataFrame()
-    df_archive = add_canonical_name(df_archive)
-    df_archive = calculate_daily_metrics(df_archive)
-    return df_archive
 
 # --- Функция загрузки файла в GitHub через API ---
 def github_upload_file(local_path: str, target_path: str, commit_message: str):
@@ -535,57 +581,31 @@ def normalize_dataframe(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return df
 
 
-@app.callback(
-    Output("upload-status", "children"),
-    Output("sklad-2025-filter", "options"),
-    Output("article-2025-filter", "options"),
-    Output("nom-2025-filter", "options"),
-    Input("upload-data", "contents"),
-    State("upload-data", "filename")
-)
-def upload_2025_file(contents, filename):
-    if contents is None:
-        raise dash.exceptions.PreventUpdate
+logger = logging.getLogger(__name__)
 
-    # --- Декодируем файл ---
-    content_type, content_string = contents.split(',')
-    decoded = base64.b64decode(content_string)
+def upload_2025_file(contents, filename, repo, GITHUB_BRANCH):
+    try:
+        content_type, content_string = contents.split(",")
+        decoded = base64.b64decode(content_string)
+        df_new = pd.read_excel(io.BytesIO(decoded))
 
-    os.makedirs(TMP_UPLOAD_PATH, exist_ok=True)
-    tmp_path = os.path.join(TMP_UPLOAD_PATH, filename)
-    with open(tmp_path, "wb") as f:
-        f.write(decoded)
+        # Проверим, что есть нужные колонки
+        required_cols = ["Склад", "Артикул", "Дата"]
+        for col in required_cols:
+            if col not in df_new.columns:
+                raise ValueError(f"Не найдена колонка: {col}")
 
-    # --- Чтение Excel ---
-    df_new = read_excel_file(tmp_path, sklad_name="auto")
-    if df_new is None or df_new.empty:
-        return f"Файл {filename} пуст или некорректен", dash.no_update, dash.no_update, dash.no_update
+        elements = []
+        added_rows = 0
 
-    # --- Готовим батч для коммита ---
-    g = Github(GITHUB_TOKEN)
-    repo = g.get_repo(GITHUB_REPO)
-    master_ref = repo.get_git_ref(f"heads/{GITHUB_BRANCH}")
-    base_tree = repo.get_git_tree(master_ref.object.sha)
+        for (sklad, article), group in df_new.groupby(["Склад", "Артикул"], dropna=False):
+            # Пустые артикулы заменяем на временный ID
+            if pd.isna(article) or str(article).strip() == "":
+                article = f"NOARTICLE_{uuid.uuid4().hex[:8]}"
 
-    elements = []
-    added_rows = 0
+            remote_path = f"data/new_uploads/{safe_filename(sklad)}/{safe_filename(article)}.csv"
 
-    for (sklad, article), group in df_new.groupby(["Склад", "Артикул"], dropna=False):
-        if pd.isna(article) or str(article).strip() == "":
-            article = f"NOARTICLE_{uuid.uuid4().hex[:8]}"
-
-        remote_path = f"data/new_uploads/{safe_filename(sklad)}/{safe_filename(article)}.csv"
-
-        try:
-            file_content = repo.get_contents(remote_path, ref=GITHUB_BRANCH)
-            df_existing = pd.read_csv(io.StringIO(file_content.decoded_content.decode("utf-8")))
-            max_date = pd.to_datetime(df_existing["Дата"])
-            group = group[pd.to_datetime(group["Дата"]) > max_date.max()]
-        except Exception:
-            # Файл не существует → берём всё
-            pass
-
-        if not group.empty:
+            # Сохраняем все строки этой группы
             csv_bytes = group.to_csv(index=False, encoding="utf-8-sig")
             element = InputGitTreeElement(
                 path=remote_path,
@@ -596,30 +616,23 @@ def upload_2025_file(contents, filename):
             elements.append(element)
             added_rows += len(group)
 
-    if not elements:
-        return f"Файл {filename} обработан, новых данных нет", dash.no_update, dash.no_update, dash.no_update
+        if elements:
+            # Создаем дерево и коммит
+            base_tree = repo.get_git_tree(sha=GITHUB_BRANCH)
+            new_tree = repo.create_git_tree(elements, base_tree)
+            parent = repo.get_git_commit(repo.get_branch(GITHUB_BRANCH).commit.sha)
+            commit_message = f"Добавлен {filename}, строк: {added_rows}"
+            new_commit = repo.create_git_commit(commit_message, new_tree, [parent])
+            repo.get_git_ref(f"heads/{GITHUB_BRANCH}").edit(new_commit.sha)
+            logger.info(f"✅ Залито {added_rows} строк из {filename}")
+            return f"Файл {filename} обработан. Добавлено {added_rows} строк."
+        else:
+            logger.warning(f"⚠️ В {filename} не найдено новых данных")
+            return f"Файл {filename} не содержал данных."
 
-    # --- Делаем один коммит с пачкой файлов ---
-    tree = repo.create_git_tree(elements, base_tree)
-    parent = repo.get_git_commit(master_ref.object.sha)
-    commit = repo.create_git_commit(f"Загрузка {filename}: {added_rows} строк", tree, [parent])
-    master_ref.edit(commit.sha)
-
-    logging.info(f"[upload_2025_file] Загружено {added_rows} строк одним коммитом")
-
-    # --- Обновляем глобальный DataFrame ---
-    global df_2025_clean
-    df_2025 = load_combined_2025()
-    if df_2025.empty:
-        return "Ошибка: данные отсутствуют после загрузки", dash.no_update, dash.no_update, dash.no_update
-    df_2025_clean = df_2025[~df_2025["Аномалия"]].copy()
-
-    # --- Фильтры ---
-    sklads_options = [{"label": s, "value": s} for s in sorted(df_2025_clean['Склад'].unique())]
-    articles_options = [{"label": a, "value": a} for a in sorted(df_2025_clean['Артикул_товар'].astype(str).unique())]
-    noms_options = [{"label": n, "value": n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
-
-    return f"Файл {filename} успешно добавлен: {added_rows} строк", sklads_options, articles_options, noms_options
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке {filename}: {e}", exc_info=True)
+        return f"Ошибка при обработке {filename}: {e}"
 # ------------------- Колбэк графика -------------------
 @app.callback(
     Output("graph-2025-line", "figure"),
