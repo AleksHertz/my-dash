@@ -25,6 +25,7 @@ from dash.exceptions import PreventUpdate
 from data_uploader import process_new_file, read_excel_file, safe_filename
 from github import Github, InputGitTreeElement
 import uuid
+import time
 # --------------------
 # НАСТРОЙКИ
 # --------------------
