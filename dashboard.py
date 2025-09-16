@@ -603,7 +603,6 @@ def normalize_dataframe(df: pd.DataFrame, filename: str) -> pd.DataFrame:
 
 
 # === Callback для загрузки файла на вкладке "Анализ 2025" ===
-# --- Колбэк загрузки файла через Dash с локальным сохранением CSV ---
 @app.callback(
     Output("upload-status", "children"),
     Output("sklad-2025-filter", "options"),
@@ -682,15 +681,15 @@ def upload_2025_file(contents, filename):
     logging.info(f"[upload_2025_file] {msg}")
     print(f"[upload_2025_file] {msg}")
 
-    # --- Запуск фоновой загрузки на GitHub ---
+    # --- Запуск фоновой загрузки на GitHub пачками ---
     import threading
     threading.Thread(target=upload_new_csv_to_github, args=(TMP_UPLOAD_PATH,), daemon=True).start()
 
     return msg, sklads_options, articles_options, noms_options
 
 
-# --- Фоновая функция загрузки CSV на GitHub ---
-def upload_new_csv_to_github(base_path: str):
+# --- Фоновая функция загрузки CSV на GitHub пачками ---
+def upload_new_csv_to_github(base_path: str, batch_size: int = 20, delay: float = 1.0):
     logging.info("[upload_new_csv_to_github] Старт фоновой загрузки CSV на GitHub")
     print("[upload_new_csv_to_github] Старт фоновой загрузки CSV на GitHub")
 
@@ -698,28 +697,52 @@ def upload_new_csv_to_github(base_path: str):
     repo = g.get_repo(GITHUB_REPO)
 
     new_uploads_path = os.path.join(base_path, "new_uploads")
+    all_files = []
     for root, _, files in os.walk(new_uploads_path):
         for file in files:
-            if not file.endswith(".csv"):
-                continue
-            local_file = os.path.join(root, file)
-            relative_path = os.path.relpath(local_file, base_path).replace("\\", "/")
+            if file.endswith(".csv"):
+                local_file = os.path.join(root, file)
+                relative_path = os.path.relpath(local_file, base_path).replace("\\", "/")
+                all_files.append((local_file, relative_path))
+
+    total_files = len(all_files)
+    logging.info(f"[upload_new_csv_to_github] Всего файлов для загрузки: {total_files}")
+    print(f"[upload_new_csv_to_github] Всего файлов для загрузки: {total_files}")
+
+    for i in range(0, total_files, batch_size):
+        batch = all_files[i:i+batch_size]
+        for local_file, relative_path in batch:
             with open(local_file, "rb") as f:
                 content = f.read()
-            commit_msg = f"Добавление новых данных: {file}"
+            commit_msg = f"Добавление новых данных: {os.path.basename(local_file)}"
             try:
+                existing_file = None
                 try:
                     existing_file = repo.get_contents(relative_path, ref=GITHUB_BRANCH)
+                except:
+                    pass
+
+                if existing_file:
                     repo.update_file(relative_path, commit_msg, content, sha=existing_file.sha, branch=GITHUB_BRANCH)
                     logging.info(f"[upload_new_csv_to_github] Обновлён файл {relative_path}")
                     print(f"[upload_new_csv_to_github] Обновлён файл {relative_path}")
-                except Exception:
+                else:
                     repo.create_file(relative_path, commit_msg, content, branch=GITHUB_BRANCH)
                     logging.info(f"[upload_new_csv_to_github] Создан файл {relative_path}")
                     print(f"[upload_new_csv_to_github] Создан файл {relative_path}")
+
             except Exception as e:
                 logging.error(f"[upload_new_csv_to_github] Ошибка загрузки {relative_path}: {e}", exc_info=True)
                 print(f"[upload_new_csv_to_github] Ошибка загрузки {relative_path}: {e}")
+
+        # Таймаут после каждой пачки
+        if i + batch_size < total_files:
+            logging.info(f"[upload_new_csv_to_github] Загрузка {i+1}-{i+len(batch)} файлов завершена. Ждём {delay} сек...")
+            print(f"[upload_new_csv_to_github] Загрузка {i+1}-{i+len(batch)} файлов завершена. Ждём {delay} сек...")
+            time.sleep(delay)
+
+    logging.info(f"[upload_new_csv_to_github] Загрузка всех файлов завершена")
+    print(f"[upload_new_csv_to_github] Загрузка всех файлов завершена")
 # ------------------- Колбэк графика -------------------
 @app.callback(
     Output("graph-2025-line", "figure"),
