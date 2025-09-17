@@ -749,7 +749,7 @@ def update_line_graph(selected_article, selected_nom, selected_sklads):
         df_s["Цена_изменилась"] = df_s["Цена"].diff().fillna(0) != 0
         df_s["Цвет"] = df_s.apply(lambda row: "purple" if row["Всплеск"] and row["Цена_изменилась"]
                                    else "red" if row["Всплеск"]
-                                   else "orange" if row["Цена_изменилась"]
+                                   else "green" if row["Цена_изменилась"]
                                    else "blue", axis=1)
         df_s["Размер"] = df_s["Всплеск"].apply(lambda x: 10 if x else 5)
 
