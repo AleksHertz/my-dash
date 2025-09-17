@@ -782,7 +782,7 @@ def update_line_graph(selected_article, selected_nom, selected_sklads):
     # Легенда
     legend_colors = {
         "Всплеск": "red",
-        "Изменение цены": "orange",
+        "Изменение цены": "green",
         "Всплеск + Изм. цены": "purple",
         "Обычный день": "blue"
     }
