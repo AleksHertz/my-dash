@@ -770,7 +770,7 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
         df_s["Цена_изменилась"] = df_s["Цена"].diff().fillna(0) != 0
         df_s["Цвет"] = df_s.apply(lambda row: "purple" if row["Всплеск"] and row["Цена_изменилась"]
                                    else "red" if row["Всплеск"]
-                                   else "orange" if row["Цена_изменилась"]
+                                   else "green" if row["Цена_изменилась"]
                                    else "blue", axis=1)
         df_s["Размер"] = df_s["Всплеск"].apply(lambda x: 10 if x else 5)
 
@@ -821,11 +821,15 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
     return fig
 
 # ------------------- Таблица топ-100 -------------------
+# ------------------- Таблица топ-100 -------------------
 @app.callback(
     Output("top-100-table", "data"),
-    Input("sklad-2025-filter", "value")
+    Output("top-100-table", "selected_rows"),  # сохраняем/сбрасываем выбор
+    Input("sklad-2025-filter", "value"),
+    State("top-100-table", "data"),
+    State("top-100-table", "selected_rows"),
 )
-def update_top_100_table(selected_sklads):
+def update_top_100_table(selected_sklads, prev_data, prev_selected):
     dff = df_2025_clean.copy()
 
     # Фильтр по складам
@@ -833,12 +837,12 @@ def update_top_100_table(selected_sklads):
         dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
 
     if dff.empty:
-        return []
+        return [], []
 
     # Группировка по артикулу + номенклатуре + складу
     top_df = (
         dff.groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)
-           .agg({"Продано": "sum"})  # ✅ используем готовую колонку
+           .agg({"Продано": "sum"})
            .sort_values("Продано", ascending=False)
            .head(100)
     )
@@ -851,7 +855,21 @@ def update_top_100_table(selected_sklads):
         }
     )
 
-    return top_df.to_dict("records")
+    records = top_df.to_dict("records")
+
+    # --- Попытка сохранить выбор ---
+    if prev_selected and prev_data:
+        old_row = prev_data[prev_selected[0]]
+        # Ищем товар по Артикулу + Номенклатуре
+        for idx, row in enumerate(records):
+            if (
+                row["Артикул"] == old_row["Артикул"]
+                and row["Номенклатура"] == old_row["Номенклатура"]
+            ):
+                return records, [idx]
+
+    # Если не нашли → сбрасываем выбор
+    return records, []
 
 # ------------------- Колбэк выбора товара из таблицы -------------------
 @app.callback(
