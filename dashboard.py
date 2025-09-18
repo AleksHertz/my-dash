@@ -706,6 +706,22 @@ def upload_2025_file(contents, filename):
     logging.info(f"[upload_2025_file] Сохранён новый CSV: {csv_path}")
     print(f"[upload_2025_file] Сохранён новый CSV: {csv_path}")
 
+    # --- Git commit + push ---
+    try:
+        repo_path = os.getcwd()
+        rel_path = os.path.relpath(csv_path, repo_path)
+
+        subprocess.run(["git", "add", rel_path], check=True)
+        commit_msg = f"Добавлен файл {os.path.basename(csv_path)}"
+        subprocess.run(["git", "commit", "-m", commit_msg], check=True)
+        subprocess.run(["git", "push"], check=True)
+
+        logging.info(f"[upload_2025_file] Успешный пуш {rel_path}")
+        print(f"[upload_2025_file] Успешный пуш {rel_path}")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"[upload_2025_file] Ошибка git: {e}")
+        print(f"[upload_2025_file] Ошибка git: {e}")
+
     # --- Обновляем глобальный DataFrame ---
     global df_2025_clean
     df_2025 = load_combined_2025()
@@ -716,12 +732,9 @@ def upload_2025_file(contents, filename):
     articles_options = [{"label": a, "value": a} for a in sorted(df_2025_clean['Артикул_товар'].astype(str).unique())]
     noms_options = [{"label": n, "value": n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
 
-    msg = f"Файл {filename} обработан: добавлен CSV {os.path.basename(csv_path)}"
+    msg = f"Файл {filename} обработан и загружен в GitHub: {os.path.basename(csv_path)}"
     logging.info(f"[upload_2025_file] {msg}")
     print(f"[upload_2025_file] {msg}")
-
-    # --- Фоновая загрузка на GitHub ---
-    threading.Thread(target=upload_new_csv_to_github, args=(csv_path,), daemon=True).start()
 
     return msg, sklads_options, articles_options, noms_options
 
