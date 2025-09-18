@@ -709,10 +709,11 @@ def upload_new_csv_to_github(csv_path: str):
     Output("graph-2025-line", "figure"),
     Input("article-2025-filter", "value"),
     Input("nom-2025-filter", "value"),
-    Input("sklad-2025-filter", "value")
+    Input("sklad-2025-filter", "value"),
+    Input("month-2025-filter", "value")  # <-- добавили фильтр по месяцу
 )
-def update_line_graph(selected_article, selected_nom, selected_sklads):
-    # Если товар не выбран, возвращаем пустой график с подсказкой
+def update_line_graph(selected_article, selected_nom, selected_sklads, selected_month):
+    # Если товар не выбран, возвращаем пустой график
     if not selected_article or not selected_nom:
         return go.Figure(
             layout=go.Layout(
@@ -729,6 +730,10 @@ def update_line_graph(selected_article, selected_nom, selected_sklads):
         dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
     dff = dff[(dff["Артикул_товар"].astype(str) == str(selected_article)) &
               (dff["Номенклатура_канон"] == selected_nom)]
+
+    # --- Фильтр по месяцу ---
+    if selected_month:
+        dff = dff[dff["Дата"].dt.month == selected_month]
 
     if dff.empty:
         return go.Figure(
@@ -749,7 +754,7 @@ def update_line_graph(selected_article, selected_nom, selected_sklads):
         df_s["Цена_изменилась"] = df_s["Цена"].diff().fillna(0) != 0
         df_s["Цвет"] = df_s.apply(lambda row: "purple" if row["Всплеск"] and row["Цена_изменилась"]
                                    else "red" if row["Всплеск"]
-                                   else "green" if row["Цена_изменилась"]
+                                   else "orange" if row["Цена_изменилась"]
                                    else "blue", axis=1)
         df_s["Размер"] = df_s["Всплеск"].apply(lambda x: 10 if x else 5)
 
