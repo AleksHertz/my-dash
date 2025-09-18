@@ -659,7 +659,6 @@ def upload_2025_file(contents, filename):
         raise dash.exceptions.PreventUpdate
 
     logging.info(f"[upload_2025_file] Вызов: filename={filename}")
-    print(f"[upload_2025_file] Вызов: filename={filename}")
 
     # --- Сохраняем временный файл ---
     content_type, content_string = contents.split(',')
@@ -674,54 +673,29 @@ def upload_2025_file(contents, filename):
     df_new = read_excel_file(tmp_path, sklad_name="auto")
     if df_new is None or df_new.empty:
         msg = f"Файл {filename} пуст или некорректен"
-        logging.warning(f"[upload_2025_file] {msg}")
-        print(f"[upload_2025_file] {msg}")
+        logging.warning(msg)
         return msg, dash.no_update, dash.no_update, dash.no_update
 
-    logging.info(f"[upload_2025_file] Прочитано строк из Excel: {len(df_new)}")
-    print(f"[upload_2025_file] Прочитано строк из Excel: {len(df_new)}")
-
     # --- Разбор даты ---
-    file_date = None
     try:
         file_date = pd.to_datetime(df_new.iloc[1, 0], dayfirst=True, errors="coerce")
         if pd.notna(file_date):
             df_new['Дата'] = file_date
-            logging.info(f"[upload_2025_file] Дата из файла (A2): {file_date.date()}")
-            print(f"[upload_2025_file] Дата из файла (A2): {file_date.date()}")
         else:
-            raise ValueError("Не удалось преобразовать A2 в дату")
-    except Exception as e:
-        logging.warning(f"[upload_2025_file] Ошибка чтения даты из A2: {e}")
-        print(f"[upload_2025_file] Ошибка чтения даты из A2: {e}")
+            file_date = datetime.now()
+    except Exception:
         file_date = datetime.now()
 
-    # --- Сохраняем в CSV ---
+    # --- Сохраняем CSV ---
     date_str = file_date.strftime("%Y-%m-%d")
     time_str = datetime.now().strftime("%H-%M")
     folder_path = os.path.join(TMP_UPLOAD_PATH, "new_uploads")
     os.makedirs(folder_path, exist_ok=True)
     csv_path = os.path.join(folder_path, f"new_uploads_{date_str}_{time_str}.csv")
-
     df_new.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    logging.info(f"[upload_2025_file] Сохранён новый CSV: {csv_path}")
-    print(f"[upload_2025_file] Сохранён новый CSV: {csv_path}")
 
-    # --- Git commit + push ---
-    try:
-        repo_path = os.getcwd()
-        rel_path = os.path.relpath(csv_path, repo_path)
-
-        subprocess.run(["git", "add", rel_path], check=True)
-        commit_msg = f"Добавлен файл {os.path.basename(csv_path)}"
-        subprocess.run(["git", "commit", "-m", commit_msg], check=True)
-        subprocess.run(["git", "push"], check=True)
-
-        logging.info(f"[upload_2025_file] Успешный пуш {rel_path}")
-        print(f"[upload_2025_file] Успешный пуш {rel_path}")
-    except subprocess.CalledProcessError as e:
-        logging.error(f"[upload_2025_file] Ошибка git: {e}")
-        print(f"[upload_2025_file] Ошибка git: {e}")
+    # --- Асинхронный пуш на GitHub через API ---
+    threading.Thread(target=upload_new_csv_to_github, args=(csv_path,), daemon=True).start()
 
     # --- Обновляем глобальный DataFrame ---
     global df_2025_clean
@@ -733,9 +707,8 @@ def upload_2025_file(contents, filename):
     articles_options = [{"label": a, "value": a} for a in sorted(df_2025_clean['Артикул_товар'].astype(str).unique())]
     noms_options = [{"label": n, "value": n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
 
-    msg = f"Файл {filename} обработан и загружен в GitHub: {os.path.basename(csv_path)}"
-    logging.info(f"[upload_2025_file] {msg}")
-    print(f"[upload_2025_file] {msg}")
+    msg = f"Файл {filename} обработан и загружен в GitHub"
+    logging.info(msg)
 
     return msg, sklads_options, articles_options, noms_options
 
