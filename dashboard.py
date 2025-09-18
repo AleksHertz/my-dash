@@ -27,7 +27,7 @@ from github import Github, InputGitTreeElement
 import uuid
 import time
 import threading
-import datetime
+from datetime import datetime
 # --------------------
 # НАСТРОЙКИ
 # --------------------
