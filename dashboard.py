@@ -422,7 +422,7 @@ app.layout = html.Div([
             ]),
         ]),  # 👈 Закрыл первую вкладку
 
-          # ===================== Новая вкладка 2025 =====================
+        # ===================== Новая вкладка 2025 =====================
         dcc.Tab(label="Анализ 2025", children=[
             html.Div([
                 # ===================== Загрузка новых данных =====================
@@ -514,8 +514,24 @@ app.layout = html.Div([
                 html.H3("Динамика продаж, пополнений и цены выбранного товара"),
                 dcc.Graph(id='graph-2025-line'),
 
-                # ===================== Таблица ТОП-100 =====================
-                html.H3("ТОП-100 товаров по продажам (2025)", style={"marginTop": "20px"}),
+                # ===================== Таблица ТОП =====================
+                html.Div([
+                    html.Label("Размер ТОПа:"),
+                    dcc.RadioItems(
+                        id="top-size-selector",
+                        options=[
+                            {"label": "Топ-50", "value": 50},
+                            {"label": "Топ-100", "value": 100},
+                            {"label": "Топ-250", "value": 250},
+                            {"label": "Топ-500", "value": 500},
+                        ],
+                        value=100,
+                        inline=True
+                    ),
+                ], style={"marginBottom": "10px"}),
+
+                html.H3(id="top-title", style={"marginTop": "20px"}),  # <-- динамический заголовок
+
                 dash_table.DataTable(
                     id="top-100-table",
                     columns=[
@@ -821,15 +837,17 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
     return fig
 
 # ------------------- Таблица топ-100 -------------------
-# ------------------- Таблица топ-100 -------------------
+# ------------------- Таблица ТОП-N -------------------
 @app.callback(
     Output("top-100-table", "data"),
     Output("top-100-table", "selected_rows"),  # сохраняем/сбрасываем выбор
+    Output("top-title", "children"),           # <-- динамический заголовок
     Input("sklad-2025-filter", "value"),
+    Input("top-size-selector", "value"),       # <-- выбор размера ТОПа
     State("top-100-table", "data"),
     State("top-100-table", "selected_rows"),
 )
-def update_top_100_table(selected_sklads, prev_data, prev_selected):
+def update_top_table(selected_sklads, top_n, prev_data, prev_selected):
     dff = df_2025_clean.copy()
 
     # Фильтр по складам
@@ -837,14 +855,14 @@ def update_top_100_table(selected_sklads, prev_data, prev_selected):
         dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
 
     if dff.empty:
-        return [], []
+        return [], [], f"ТОП-{top_n} товаров по продажам (2025)"
 
     # Группировка по артикулу + номенклатуре + складу
     top_df = (
         dff.groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)
            .agg({"Продано": "sum"})
            .sort_values("Продано", ascending=False)
-           .head(100)
+           .head(top_n)
     )
 
     # Переименовываем для таблицы
@@ -859,17 +877,20 @@ def update_top_100_table(selected_sklads, prev_data, prev_selected):
 
     # --- Попытка сохранить выбор ---
     if prev_selected and prev_data:
-        old_row = prev_data[prev_selected[0]]
-        # Ищем товар по Артикулу + Номенклатуре
-        for idx, row in enumerate(records):
-            if (
-                row["Артикул"] == old_row["Артикул"]
-                and row["Номенклатура"] == old_row["Номенклатура"]
-            ):
-                return records, [idx]
+        try:
+            old_row = prev_data[prev_selected[0]]
+            # Ищем товар по Артикулу + Номенклатуре
+            for idx, row in enumerate(records):
+                if (
+                    row["Артикул"] == old_row["Артикул"]
+                    and row["Номенклатура"] == old_row["Номенклатура"]
+                ):
+                    return records, [idx], f"ТОП-{top_n} товаров по продажам (2025)"
+        except Exception:
+            pass
 
     # Если не нашли → сбрасываем выбор
-    return records, []
+    return records, [], f"ТОП-{top_n} товаров по продажам (2025)"
 
 # ------------------- Колбэк выбора товара из таблицы -------------------
 @app.callback(
