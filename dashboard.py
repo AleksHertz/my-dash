@@ -687,11 +687,14 @@ def upload_new_csv_to_github(csv_path: str):
     g = Github(GITHUB_TOKEN)
     repo = g.get_repo(GITHUB_REPO)
 
-    relative_path = os.path.relpath(csv_path, TMP_UPLOAD_PATH).replace("\\", "/")
+    # Загружаем с именем файла в папку data/new_uploads
+    target_filename = os.path.basename(csv_path)
+    relative_path = f"data/new_uploads/{target_filename}"
+
     with open(csv_path, "rb") as f:
         content = f.read()
 
-    commit_msg = f"Добавление новых данных: {os.path.basename(csv_path)}"
+    commit_msg = f"Добавление новых данных: {target_filename}"
     try:
         try:
             existing_file = repo.get_contents(relative_path, ref=GITHUB_BRANCH)
