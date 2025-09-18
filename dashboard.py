@@ -279,23 +279,42 @@ def load_combined_2025() -> pd.DataFrame:
         logging.error(f"[load_combined_2025] Общая ошибка: {e}", exc_info=True)
         return pd.DataFrame()
 
-# --- Функция загрузки файла в GitHub через API ---
-def github_upload_file(local_path: str, target_path: str, commit_message: str):
-    g = Github(GITHUB_TOKEN)
-    repo = g.get_repo(GITHUB_REPO)
+# --- Функция загрузки файла в GitHub (универсальная) ---
+def github_upload_file(local_path: str, target_path: str, commit_message: str) -> bool:
     try:
+        g = Github(GITHUB_TOKEN)
+        repo = g.get_repo(GITHUB_REPO)
+
         with open(local_path, "rb") as f:
             content = f.read()
+
         try:
             file = repo.get_contents(target_path, ref=GITHUB_BRANCH)
-            repo.update_file(path=target_path, message=commit_message, content=content, sha=file.sha, branch=GITHUB_BRANCH)
-        except:
-            repo.create_file(path=target_path, message=commit_message, content=content, branch=GITHUB_BRANCH)
-        logging.info(f"[github_upload_file] Файл {target_path} успешно загружен в GitHub")
+            repo.update_file(
+                path=target_path,
+                message=commit_message,
+                content=content,
+                sha=file.sha,
+                branch=GITHUB_BRANCH
+            )
+            logging.info(f"[github_upload_file] Обновлён файл {target_path}")
+            print(f"[github_upload_file] Обновлён файл {target_path}")
+        except Exception:
+            repo.create_file(
+                path=target_path,
+                message=commit_message,
+                content=content,
+                branch=GITHUB_BRANCH
+            )
+            logging.info(f"[github_upload_file] Создан файл {target_path}")
+            print(f"[github_upload_file] Создан файл {target_path}")
+
         return True
     except Exception as e:
-        logging.error(f"[github_upload_file] Ошибка загрузки {target_path} в GitHub: {e}", exc_info=True)
+        logging.error(f"[github_upload_file] Ошибка загрузки {target_path}: {e}", exc_info=True)
+        print(f"[github_upload_file] Ошибка загрузки {target_path}: {e}")
         return False
+
 
 # --- Инициализация глобальных переменных ---
 df_2025 = load_combined_2025()
@@ -624,14 +643,15 @@ def normalize_dataframe(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return df
 
 
-# --- Колбэк загрузки файла через Dash с локальным сохранением CSV ---
+# --- Колбэк загрузки файла через Dash ---
 @app.callback(
     Output("upload-status", "children"),
     Output("sklad-2025-filter", "options"),
     Output("article-2025-filter", "options"),
     Output("nom-2025-filter", "options"),
     Input("upload-data", "contents"),
-    State("upload-data", "filename")
+    State("upload-data", "filename"),
+    prevent_initial_call=True
 )
 def upload_2025_file(contents, filename):
     if contents is None:
@@ -660,7 +680,7 @@ def upload_2025_file(contents, filename):
     logging.info(f"[upload_2025_file] Прочитано строк из Excel: {len(df_new)}")
     print(f"[upload_2025_file] Прочитано строк из Excel: {len(df_new)}")
 
-    # --- Разбор даты из ячейки A2 ---
+    # --- Разбор даты ---
     file_date = None
     try:
         file_date = pd.to_datetime(df_new.iloc[1, 0], dayfirst=True, errors="coerce")
@@ -675,9 +695,9 @@ def upload_2025_file(contents, filename):
         print(f"[upload_2025_file] Ошибка чтения даты из A2: {e}")
         file_date = datetime.now()
 
-    # --- Сохраняем все новые строки в CSV с датой и временем ---
+    # --- Сохраняем в CSV ---
     date_str = file_date.strftime("%Y-%m-%d")
-    time_str = datetime.now().strftime("%H-%M")  # чтобы не затирался при многократной загрузке
+    time_str = datetime.now().strftime("%H-%M")
     folder_path = os.path.join(TMP_UPLOAD_PATH, "new_uploads")
     os.makedirs(folder_path, exist_ok=True)
     csv_path = os.path.join(folder_path, f"new_uploads_{date_str}_{time_str}.csv")
@@ -701,41 +721,21 @@ def upload_2025_file(contents, filename):
     print(f"[upload_2025_file] {msg}")
 
     # --- Фоновая загрузка на GitHub ---
-    import threading
     threading.Thread(target=upload_new_csv_to_github, args=(csv_path,), daemon=True).start()
 
     return msg, sklads_options, articles_options, noms_options
 
 
-# --- Фоновая функция загрузки CSV на GitHub ---
+# --- Фоновая функция для запуска github_upload_file ---
 def upload_new_csv_to_github(csv_path: str):
     logging.info(f"[upload_new_csv_to_github] Старт загрузки {csv_path}")
     print(f"[upload_new_csv_to_github] Старт загрузки {csv_path}")
 
-    g = Github(GITHUB_TOKEN)
-    repo = g.get_repo(GITHUB_REPO)
-
-    # Загружаем с именем файла в папку data/new_uploads
     target_filename = os.path.basename(csv_path)
     relative_path = f"data/new_uploads/{target_filename}"
-
-    with open(csv_path, "rb") as f:
-        content = f.read()
-
     commit_msg = f"Добавление новых данных: {target_filename}"
-    try:
-        try:
-            existing_file = repo.get_contents(relative_path, ref=GITHUB_BRANCH)
-            repo.update_file(relative_path, commit_msg, content, sha=existing_file.sha, branch=GITHUB_BRANCH)
-            logging.info(f"[upload_new_csv_to_github] Обновлён файл {relative_path}")
-            print(f"[upload_new_csv_to_github] Обновлён файл {relative_path}")
-        except Exception:
-            repo.create_file(relative_path, commit_msg, content, branch=GITHUB_BRANCH)
-            logging.info(f"[upload_new_csv_to_github] Создан файл {relative_path}")
-            print(f"[upload_new_csv_to_github] Создан файл {relative_path}")
-    except Exception as e:
-        logging.error(f"[upload_new_csv_to_github] Ошибка загрузки {relative_path}: {e}", exc_info=True)
-        print(f"[upload_new_csv_to_github] Ошибка загрузки {relative_path}: {e}")
+
+    github_upload_file(csv_path, relative_path, commit_msg)
 # ------------------- Колбэк графика -------------------
 @app.callback(
     Output("graph-2025-line", "figure"),
