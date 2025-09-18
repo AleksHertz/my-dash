@@ -624,6 +624,7 @@ def upload_2025_file(contents, filename):
     logging.info(f"[upload_2025_file] Вызов: filename={filename}")
     print(f"[upload_2025_file] Вызов: filename={filename}")
 
+    # --- Сохраняем временный файл ---
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
 
@@ -632,6 +633,7 @@ def upload_2025_file(contents, filename):
     with open(tmp_path, "wb") as f:
         f.write(decoded)
 
+    # --- Читаем Excel ---
     df_new = read_excel_file(tmp_path, sklad_name="auto")
     if df_new is None or df_new.empty:
         msg = f"Файл {filename} пуст или некорректен"
@@ -642,19 +644,29 @@ def upload_2025_file(contents, filename):
     logging.info(f"[upload_2025_file] Прочитано строк из Excel: {len(df_new)}")
     print(f"[upload_2025_file] Прочитано строк из Excel: {len(df_new)}")
 
-    # --- Разбор даты (ячейка А2) ---
-    if 'Дата' not in df_new.columns:
-        df_new['Дата'] = pd.to_datetime(df_new.iloc[1, 0], dayfirst=True)
-        logging.info(f"[upload_2025_file] Дата взята из ячейки A2: {df_new['Дата'].iloc[0]}")
-        print(f"[upload_2025_file] Дата взята из ячейки A2: {df_new['Дата'].iloc[0]}")
+    # --- Разбор даты из ячейки A2 ---
+    file_date = None
+    try:
+        file_date = pd.to_datetime(df_new.iloc[1, 0], dayfirst=True, errors="coerce")
+        if pd.notna(file_date):
+            df_new['Дата'] = file_date
+            logging.info(f"[upload_2025_file] Дата из файла (A2): {file_date.date()}")
+            print(f"[upload_2025_file] Дата из файла (A2): {file_date.date()}")
+        else:
+            raise ValueError("Не удалось преобразовать A2 в дату")
+    except Exception as e:
+        logging.warning(f"[upload_2025_file] Ошибка чтения даты из A2: {e}")
+        print(f"[upload_2025_file] Ошибка чтения даты из A2: {e}")
+        file_date = datetime.now()
 
-    # --- Сохраняем все новые строки в один CSV по дате ---
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    # --- Сохраняем все новые строки в CSV с датой и временем ---
+    date_str = file_date.strftime("%Y-%m-%d")
+    time_str = datetime.now().strftime("%H-%M")  # чтобы не затирался при многократной загрузке
     folder_path = os.path.join(TMP_UPLOAD_PATH, "new_uploads")
     os.makedirs(folder_path, exist_ok=True)
-    csv_path = os.path.join(folder_path, f"new_uploads_{today_str}.csv")
-    df_new.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    csv_path = os.path.join(folder_path, f"new_uploads_{date_str}_{time_str}.csv")
 
+    df_new.to_csv(csv_path, index=False, encoding="utf-8-sig")
     logging.info(f"[upload_2025_file] Сохранён новый CSV: {csv_path}")
     print(f"[upload_2025_file] Сохранён новый CSV: {csv_path}")
 
