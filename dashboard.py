@@ -1234,7 +1234,7 @@ def download_peaks_excel(n_clicks, sklad, article, nom):
 @app.callback(
     Output("download-2025-xlsx", "data"),
     Input("download-2025-btn", "n_clicks"),
-    State("sklad-2025-filter", "value"),     # 👈 правильные id
+    State("sklad-2025-filter", "value"),
     State("article-2025-filter", "value"),
     State("nom-2025-filter", "value"),
     State("month-2025-filter", "value"),
@@ -1246,11 +1246,17 @@ def download_2025_excel(n_clicks, sklad, article, nom, month):
 
         # --- применяем фильтры ---
         if sklad and sklad != "Все":
-            dff = dff[dff["Склад"] == sklad]
+            if isinstance(sklad, list):
+                dff = dff[dff["Склад"].isin(sklad)]
+            else:
+                dff = dff[dff["Склад"] == sklad]
+
         if article:
             dff = dff[dff["Артикул"] == article]
+
         if nom:
             dff = dff[dff["Номенклатура"] == nom]
+
         if month:
             dff = dff[dff["Дата"].dt.month == int(month)]
 
@@ -1266,16 +1272,19 @@ def download_2025_excel(n_clicks, sklad, article, nom, month):
         import io
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            if sklad == "Все":
+            # если мультисклады или выбран "Все"
+            if isinstance(sklad, list) or sklad == "Все":
                 for skl in dff["Склад"].unique():
                     dff_skl = dff[dff["Склад"] == skl]
-                    dff_skl[[ "Дата", "Склад", "Артикул", "Номенклатура",
-                              "Остаток", "Продано", "Пополнено", "Цена" ]
-                    ].to_excel(writer, index=False, sheet_name=str(skl)[:31])
+                    dff_skl[[
+                        "Дата", "Склад", "Артикул", "Номенклатура",
+                        "Остаток", "Продано", "Пополнено", "Цена"
+                    ]].to_excel(writer, index=False, sheet_name=str(skl)[:31])
             else:
-                dff[[ "Дата", "Склад", "Артикул", "Номенклатура",
-                      "Остаток", "Продано", "Пополнено", "Цена" ]
-                ].to_excel(writer, index=False, sheet_name="Данные")
+                dff[[
+                    "Дата", "Склад", "Артикул", "Номенклатура",
+                    "Остаток", "Продано", "Пополнено", "Цена"
+                ]].to_excel(writer, index=False, sheet_name="Данные")
 
         output.seek(0)
         return dcc.send_bytes(output.read(), filename="данные_2025.xlsx")
@@ -1283,7 +1292,7 @@ def download_2025_excel(n_clicks, sklad, article, nom, month):
     except Exception as e:
         logging.error(f"[download_2025_excel] Ошибка: {e}", exc_info=True)
         return dash.no_update
-
+        
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))  # Используем порт из переменной окружения или 10000 по умолчанию
     app.run_server(debug=False, host='0.0.0.0', port=port)
