@@ -1233,7 +1233,7 @@ def download_peaks_excel(n_clicks, sklad, article, nom):
 
 @app.callback(
     Output("download-2025-xlsx", "data"),
-    Input("btn-download-2025", "n_clicks"),
+    Input("download-2025-btn", "n_clicks"),   # 👈 теперь совпадает
     State("sklad-filter-2025", "value"),
     State("article-filter-2025", "value"),
     State("nom-filter-2025", "value"),
