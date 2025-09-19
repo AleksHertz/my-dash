@@ -1233,11 +1233,11 @@ def download_peaks_excel(n_clicks, sklad, article, nom):
 
 @app.callback(
     Output("download-2025-xlsx", "data"),
-    Input("download-2025-btn", "n_clicks"),   # 👈 теперь совпадает
-    State("sklad-filter-2025", "value"),
-    State("article-filter-2025", "value"),
-    State("nom-filter-2025", "value"),
-    State("month-filter-2025", "value"),
+    Input("download-2025-btn", "n_clicks"),
+    State("sklad-2025-filter", "value"),     # 👈 правильные id
+    State("article-2025-filter", "value"),
+    State("nom-2025-filter", "value"),
+    State("month-2025-filter", "value"),
     prevent_initial_call=True,
 )
 def download_2025_excel(n_clicks, sklad, article, nom, month):
@@ -1259,7 +1259,6 @@ def download_2025_excel(n_clicks, sklad, article, nom, month):
 
         # --- добавляем расчетные поля ---
         dff = dff.sort_values(["Склад", "Артикул", "Дата"]).reset_index(drop=True)
-
         dff["Продано"] = dff.groupby(["Склад", "Артикул"])["Остаток"].diff(-1).fillna(0)
         dff["Пополнено"] = dff.groupby(["Склад", "Артикул"])["Остаток"].diff().clip(lower=0).fillna(0)
 
@@ -1270,15 +1269,13 @@ def download_2025_excel(n_clicks, sklad, article, nom, month):
             if sklad == "Все":
                 for skl in dff["Склад"].unique():
                     dff_skl = dff[dff["Склад"] == skl]
-                    dff_skl[[
-                        "Дата", "Склад", "Артикул", "Номенклатура",
-                        "Остаток", "Продано", "Пополнено", "Цена"
-                    ]].to_excel(writer, index=False, sheet_name=str(skl)[:31])
+                    dff_skl[[ "Дата", "Склад", "Артикул", "Номенклатура",
+                              "Остаток", "Продано", "Пополнено", "Цена" ]
+                    ].to_excel(writer, index=False, sheet_name=str(skl)[:31])
             else:
-                dff[[
-                    "Дата", "Склад", "Артикул", "Номенклатура",
-                    "Остаток", "Продано", "Пополнено", "Цена"
-                ]].to_excel(writer, index=False, sheet_name="Данные")
+                dff[[ "Дата", "Склад", "Артикул", "Номенклатура",
+                      "Остаток", "Продано", "Пополнено", "Цена" ]
+                ].to_excel(writer, index=False, sheet_name="Данные")
 
         output.seek(0)
         return dcc.send_bytes(output.read(), filename="данные_2025.xlsx")
