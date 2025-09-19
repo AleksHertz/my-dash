@@ -1244,8 +1244,18 @@ def download_2025_excel(n_clicks, sklad, article, nom, month):
     try:
         dff = df_2025.copy()
 
-        # --- применяем фильтры ---
-        if sklad and sklad != "Все":
+        # --- проверяем колонки ---
+        # Приведём имена к стандартному виду, если есть пробелы или разный регистр
+        dff.columns = [col.strip() for col in dff.columns]
+
+        expected_cols = ["Склад", "Артикул", "Номенклатура", "Дата", "Остаток", "Цена"]
+        missing = [c for c in expected_cols if c not in dff.columns]
+        if missing:
+            logging.error(f"[download_2025_excel] Нет колонок: {missing}")
+            return dash.no_update
+
+        # --- фильтры ---
+        if sklad:
             if isinstance(sklad, list):
                 dff = dff[dff["Склад"].isin(sklad)]
             else:
@@ -1263,28 +1273,20 @@ def download_2025_excel(n_clicks, sklad, article, nom, month):
         if dff.empty:
             return dash.no_update
 
-        # --- добавляем расчетные поля ---
+        # --- расчетные поля ---
         dff = dff.sort_values(["Склад", "Артикул", "Дата"]).reset_index(drop=True)
         dff["Продано"] = dff.groupby(["Склад", "Артикул"])["Остаток"].diff(-1).fillna(0)
         dff["Пополнено"] = dff.groupby(["Склад", "Артикул"])["Остаток"].diff().clip(lower=0).fillna(0)
 
-        # --- готовим Excel ---
+        # --- создаём Excel ---
         import io
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            # если мультисклады или выбран "Все"
-            if isinstance(sklad, list) or sklad == "Все":
-                for skl in dff["Склад"].unique():
-                    dff_skl = dff[dff["Склад"] == skl]
-                    dff_skl[[
-                        "Дата", "Склад", "Артикул", "Номенклатура",
-                        "Остаток", "Продано", "Пополнено", "Цена"
-                    ]].to_excel(writer, index=False, sheet_name=str(skl)[:31])
-            else:
-                dff[[
-                    "Дата", "Склад", "Артикул", "Номенклатура",
-                    "Остаток", "Продано", "Пополнено", "Цена"
-                ]].to_excel(writer, index=False, sheet_name="Данные")
+            for skl in dff["Склад"].unique():
+                dff_skl = dff[dff["Склад"] == skl]
+                dff_skl[["Дата", "Склад", "Артикул", "Номенклатура", "Остаток", "Продано", "Пополнено", "Цена"]].to_excel(
+                    writer, index=False, sheet_name=str(skl)[:31]
+                )
 
         output.seek(0)
         return dcc.send_bytes(output.read(), filename="данные_2025.xlsx")
