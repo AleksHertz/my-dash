@@ -339,6 +339,7 @@ app.layout = html.Div([
             # ===================== Блок ТОПЫ =====================
             html.Div([
                 html.H2("ТОПы по складам"),
+
                 html.Label("Выберите склад:"),
                 dcc.Dropdown(
                     id='sklad-filter',
@@ -349,6 +350,7 @@ app.layout = html.Div([
                     clearable=True,
                     style={'marginBottom': '20px'}
                 ),
+
                 html.Label("Выберите количество позиций для отображения ходовых товаров:"),
                 dcc.RadioItems(
                     id='top-n-selector',
@@ -361,14 +363,25 @@ app.layout = html.Div([
                     labelStyle={'display': 'inline-block', 'marginRight': '15px'},
                     style={'marginBottom': '20px'}
                 ),
+
                 html.H3("Топ самых ходовых товаров"),
                 html.Div(
                     dcc.Graph(id='graph-top-fast'),
-                    style={'height': '700px', 'overflowY': 'scroll',
-                           'border': '1px solid #ddd', 'padding': '5px',
-                           'marginBottom': '10px', 'backgroundColor': 'white'}
+                    style={
+                        'height': '700px',
+                        'overflowY': 'scroll',
+                        'border': '1px solid #ddd',
+                        'padding': '5px',
+                        'marginBottom': '10px',
+                        'backgroundColor': 'white'
+                    }
                 ),
-                dbc.Button("📥 Выгрузить топ ходовых в Excel", id="download-top-fast-btn", color="success", className="mb-4"),
+                dbc.Button(
+                    "📥 Выгрузить топ ходовых в Excel",
+                    id="download-top-fast-btn",
+                    color="success",
+                    className="mb-4"
+                ),
 
                 html.Label("Выберите количество позиций для отображения товаров по пополнениям:"),
                 dcc.RadioItems(
@@ -382,14 +395,24 @@ app.layout = html.Div([
                     labelStyle={'display': 'inline-block', 'marginRight': '15px'},
                     style={'marginBottom': '20px'}
                 ),
+
                 html.H3("Топ товаров по пополнениям"),
                 html.Div(
                     dcc.Graph(id='graph-top-restock'),
-                    style={'height': '700px', 'overflowY': 'scroll',
-                           'border': '1px solid #ddd', 'padding': '5px',
-                           'marginBottom': '10px', 'backgroundColor': 'white'}
+                    style={
+                        'height': '700px',
+                        'overflowY': 'scroll',
+                        'border': '1px solid #ddd',
+                        'padding': '5px',
+                        'marginBottom': '10px',
+                        'backgroundColor': 'white'
+                    }
                 ),
-                dbc.Button("📥 Выгрузить топ пополнений в Excel", id="download-top-restock-btn", color="success"),
+                dbc.Button(
+                    "📥 Выгрузить топ пополнений в Excel",
+                    id="download-top-restock-btn",
+                    color="success"
+                ),
 
                 dcc.Download(id="download-top-fast"),
                 dcc.Download(id="download-top-restock"),
@@ -407,6 +430,7 @@ app.layout = html.Div([
                         placeholder="Выберите склад для всплесков",
                         clearable=True,
                     ),
+
                     html.Label("Артикул:"),
                     dcc.Dropdown(
                         id='peak-article-filter',
@@ -415,6 +439,7 @@ app.layout = html.Div([
                         placeholder="Выберите артикул",
                         clearable=True,
                     ),
+
                     html.Label("Номенклатура:"),
                     dcc.Dropdown(
                         id='peak-nom-filter',
@@ -425,9 +450,16 @@ app.layout = html.Div([
                         searchable=True,
                         style={'width': '100%'}
                     ),
+
                     html.Button("📥 Скачать в Excel", id="btn-download-peaks", n_clicks=0),
                     dcc.Download(id="download-peaks-xlsx"),
-                ], style={'maxWidth': 450, 'marginBottom': 30, 'display': 'flex', 'flexDirection': 'column', 'gap': '10px'}),
+                ], style={
+                    'maxWidth': 450,
+                    'marginBottom': 30,
+                    'display': 'flex',
+                    'flexDirection': 'column',
+                    'gap': '10px'
+                }),
 
                 dcc.Graph(id='graph-peaks'),
 
@@ -438,9 +470,14 @@ app.layout = html.Div([
                         html.Li("Средняя цена (пунктирная линия, правая ось)"),
                         html.Li("Изменение цены в процентах (штриховая линия, правая ось)"),
                     ]),
-                ], style={'maxWidth': 600, 'fontStyle': 'italic', 'color': 'gray', 'marginTop': 10}),
+                ], style={
+                    'maxWidth': 600,
+                    'fontStyle': 'italic',
+                    'color': 'gray',
+                    'marginTop': 10
+                }),
             ]),
-        ]),  # 👈 Закрыл первую вкладку
+        ]),
 
         # ===================== Новая вкладка 2025 =====================
         dcc.Tab(label="Анализ 2025", children=[
@@ -488,6 +525,7 @@ app.layout = html.Div([
                         clearable=True,
                         style={'marginBottom': '15px'}
                     ),
+
                     html.Label("Артикул:"),
                     dcc.Dropdown(
                         id='article-2025-filter',
@@ -497,6 +535,7 @@ app.layout = html.Div([
                         clearable=True,
                         style={'marginBottom': '15px'}
                     ),
+
                     html.Label("Номенклатура:"),
                     dcc.Dropdown(
                         id='nom-2025-filter',
@@ -506,6 +545,7 @@ app.layout = html.Div([
                         clearable=True,
                         style={'marginBottom': '15px'}
                     ),
+
                     html.Label("Месяц:"),
                     dcc.Dropdown(
                         id='month-2025-filter',
@@ -550,7 +590,7 @@ app.layout = html.Div([
                     ),
                 ], style={"marginBottom": "10px"}),
 
-                html.H3(id="top-title", style={"marginTop": "20px"}),  # <-- динамический заголовок
+                html.H3(id="top-title", style={"marginTop": "20px"}),
 
                 dash_table.DataTable(
                     id="top-100-table",
@@ -580,11 +620,22 @@ app.layout = html.Div([
                     },
                     page_size=20,
                     row_selectable="single",
-                )
+                ),
+
+                # ===================== Новая кнопка выгрузки =====================
+                html.Div([
+                    dbc.Button(
+                        "📥 Выгрузить в Excel (с учётом фильтров)",
+                        id="download-2025-btn",
+                        color="primary",
+                        className="mt-3"
+                    ),
+                    dcc.Download(id="download-2025-xlsx"),
+                ], style={"marginTop": "20px"})
             ])
-        ])  # Закрыли вторую вкладку
-    ])  # Закрыли dcc.Tabs
-])  # Закрыли html.Div(app.layout)
+        ])
+    ])
+])
 # --------------------
 # КОЛБЭКИ
 # --------------------
@@ -1179,6 +1230,62 @@ def download_peaks_excel(n_clicks, sklad, article, nom):
     output.seek(0)
 
     return dcc.send_bytes(output.read(), filename="всплески_продаж.xlsx")
+
+@app.callback(
+    Output("download-2025-xlsx", "data"),
+    Input("btn-download-2025", "n_clicks"),
+    State("sklad-filter-2025", "value"),
+    State("article-filter-2025", "value"),
+    State("nom-filter-2025", "value"),
+    State("month-filter-2025", "value"),
+    prevent_initial_call=True,
+)
+def download_2025_excel(n_clicks, sklad, article, nom, month):
+    try:
+        dff = df_2025.copy()
+
+        # --- применяем фильтры ---
+        if sklad and sklad != "Все":
+            dff = dff[dff["Склад"] == sklad]
+        if article:
+            dff = dff[dff["Артикул"] == article]
+        if nom:
+            dff = dff[dff["Номенклатура"] == nom]
+        if month:
+            dff = dff[dff["Дата"].dt.month == int(month)]
+
+        if dff.empty:
+            return dash.no_update
+
+        # --- добавляем расчетные поля ---
+        dff = dff.sort_values(["Склад", "Артикул", "Дата"]).reset_index(drop=True)
+
+        dff["Продано"] = dff.groupby(["Склад", "Артикул"])["Остаток"].diff(-1).fillna(0)
+        dff["Пополнено"] = dff.groupby(["Склад", "Артикул"])["Остаток"].diff().clip(lower=0).fillna(0)
+
+        # --- готовим Excel ---
+        import io
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            if sklad == "Все":
+                for skl in dff["Склад"].unique():
+                    dff_skl = dff[dff["Склад"] == skl]
+                    dff_skl[[
+                        "Дата", "Склад", "Артикул", "Номенклатура",
+                        "Остаток", "Продано", "Пополнено", "Цена"
+                    ]].to_excel(writer, index=False, sheet_name=str(skl)[:31])
+            else:
+                dff[[
+                    "Дата", "Склад", "Артикул", "Номенклатура",
+                    "Остаток", "Продано", "Пополнено", "Цена"
+                ]].to_excel(writer, index=False, sheet_name="Данные")
+
+        output.seek(0)
+        return dcc.send_bytes(output.read(), filename="данные_2025.xlsx")
+
+    except Exception as e:
+        logging.error(f"[download_2025_excel] Ошибка: {e}", exc_info=True)
+        return dash.no_update
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))  # Используем порт из переменной окружения или 10000 по умолчанию
