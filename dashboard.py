@@ -1243,50 +1243,54 @@ def download_peaks_excel(n_clicks, sklad, article, nom):
 def download_2025_excel(n_clicks, sklad, article, nom, month):
     try:
         dff = df_2025.copy()
-
-        # --- проверяем колонки ---
-        # Приведём имена к стандартному виду, если есть пробелы или разный регистр
+        # --- убираем лишние пробелы ---
         dff.columns = [col.strip() for col in dff.columns]
 
-        expected_cols = ["Склад", "Артикул", "Номенклатура", "Дата", "Остаток", "Цена"]
-        missing = [c for c in expected_cols if c not in dff.columns]
-        if missing:
-            logging.error(f"[download_2025_excel] Нет колонок: {missing}")
-            return dash.no_update
+        # --- выводим колонки для отладки ---
+        logging.info(f"[download_2025_excel] Колонки df_2025: {dff.columns.tolist()}")
+
+        # --- сопоставляем ожидаемые имена ---
+        col_map = {}
+        for col in ["Склад", "Артикул", "Номенклатура", "Дата", "Остаток", "Цена"]:
+            matches = [c for c in dff.columns if c.lower() == col.lower()]
+            if matches:
+                col_map[col] = matches[0]
+            else:
+                logging.warning(f"[download_2025_excel] Не найдена колонка '{col}' в df_2025")
 
         # --- фильтры ---
-        if sklad:
+        if sklad and col_map.get("Склад"):
             if isinstance(sklad, list):
-                dff = dff[dff["Склад"].isin(sklad)]
+                dff = dff[dff[col_map["Склад"]].isin(sklad)]
             else:
-                dff = dff[dff["Склад"] == sklad]
+                dff = dff[dff[col_map["Склад"]] == sklad]
 
-        if article:
-            dff = dff[dff["Артикул"] == article]
+        if article and col_map.get("Артикул"):
+            dff = dff[dff[col_map["Артикул"]] == article]
 
-        if nom:
-            dff = dff[dff["Номенклатура"] == nom]
+        if nom and col_map.get("Номенклатура"):
+            dff = dff[dff[col_map["Номенклатура"]] == nom]
 
-        if month:
-            dff = dff[dff["Дата"].dt.month == int(month)]
+        if month and col_map.get("Дата"):
+            dff = dff[dff[col_map["Дата"]].dt.month == int(month)]
 
         if dff.empty:
+            logging.info("[download_2025_excel] Фильтры вернули пустой датафрейм")
             return dash.no_update
 
         # --- расчетные поля ---
-        dff = dff.sort_values(["Склад", "Артикул", "Дата"]).reset_index(drop=True)
-        dff["Продано"] = dff.groupby(["Склад", "Артикул"])["Остаток"].diff(-1).fillna(0)
-        dff["Пополнено"] = dff.groupby(["Склад", "Артикул"])["Остаток"].diff().clip(lower=0).fillna(0)
+        dff = dff.sort_values([col_map.get("Склад"), col_map.get("Артикул"), col_map.get("Дата")]).reset_index(drop=True)
+        dff["Продано"] = dff.groupby([col_map.get("Склад"), col_map.get("Артикул")])[col_map.get("Остаток")].diff(-1).fillna(0)
+        dff["Пополнено"] = dff.groupby([col_map.get("Склад"), col_map.get("Артикул")])[col_map.get("Остаток")].diff().clip(lower=0).fillna(0)
 
-        # --- создаём Excel ---
+        # --- создаем Excel ---
         import io
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            for skl in dff["Склад"].unique():
-                dff_skl = dff[dff["Склад"] == skl]
-                dff_skl[["Дата", "Склад", "Артикул", "Номенклатура", "Остаток", "Продано", "Пополнено", "Цена"]].to_excel(
-                    writer, index=False, sheet_name=str(skl)[:31]
-                )
+            for skl in dff[col_map.get("Склад")].unique():
+                dff_skl = dff[dff[col_map.get("Склад")] == skl]
+                cols_to_export = [col_map.get(c, c) for c in ["Дата", "Склад", "Артикул", "Номенклатура", "Остаток", "Продано", "Пополнено", "Цена"]]
+                dff_skl[cols_to_export].to_excel(writer, index=False, sheet_name=str(skl)[:31])
 
         output.seek(0)
         return dcc.send_bytes(output.read(), filename="данные_2025.xlsx")
