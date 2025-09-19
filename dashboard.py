@@ -1236,32 +1236,27 @@ def download_peaks_excel(n_clicks, sklad, article, nom):
     Input("download-2025-btn", "n_clicks"),
     State("sklad-2025-filter", "value"),
     State("article-2025-filter", "value"),
-    State("nom-2025-filter", "value"),
     State("month-2025-filter", "value"),
     prevent_initial_call=True,
 )
-def download_2025_excel(n_clicks, sklad, article, nom, month):
+def download_2025_excel(n_clicks, sklad, article, month):
     try:
         dff = df_2025.copy()
         dff.columns = [col.strip() for col in dff.columns]
         print(f"[download_2025_excel] Колонки df_2025: {dff.columns.tolist()}")
 
-        # --- сопоставляем колонки ---
         col_map = {
             "Склад": "Склад",
             "Артикул": "Артикул_товар",
-            "Номенклатура_канон": "Номенклатура_канон",
-            "Номенклатура_варианты": "Номенклатура_варианты",
             "Дата": "Дата",
             "Остаток": "Остаток",
             "Цена": "Цена"
         }
 
-        # --- проверяем обязательные колонки ---
-        required = ["Склад", "Дата", "Остаток", "Цена"]
-        for r in required:
-            if col_map[r] not in dff.columns:
-                print(f"[download_2025_excel] ERROR: обязательная колонка '{r}' отсутствует. Выход.")
+        # --- обязательные колонки ---
+        for r in col_map.values():
+            if r not in dff.columns:
+                print(f"[download_2025_excel] ERROR: нет колонки '{r}'")
                 return dash.no_update
 
         # --- фильтры ---
@@ -1274,26 +1269,25 @@ def download_2025_excel(n_clicks, sklad, article, nom, month):
         if article:
             dff = dff[dff[col_map["Артикул"]] == article]
 
-        if nom:
-            # фильтруем по каноническому или вариантам
-            dff = dff[dff[col_map["Номенклатура_канон"]].str.contains(nom, na=False) |
-                      dff[col_map["Номенклатура_варианты"]].str.contains(nom, na=False)]
-
         if month:
             dff = dff[dff[col_map["Дата"]].dt.month == int(month)]
 
         if dff.empty:
-            print("[download_2025_excel] INFO: Фильтры вернули пустой датафрейм")
+            print("[download_2025_excel] INFO: пустой датафрейм после фильтров")
             return dash.no_update
 
-        # --- расчетные поля ---
+        # --- расчет Продано и Пополнено ---
         sort_cols = [col_map["Склад"], col_map["Артикул"], col_map["Дата"]]
         dff = dff.sort_values(sort_cols).reset_index(drop=True)
 
-        dff["Продано"] = dff.groupby([col_map["Склад"], col_map["Артикул"]])[col_map["Остаток"]].diff(-1).fillna(0)
-        dff["Пополнено"] = dff.groupby([col_map["Склад"], col_map["Артикул"]])[col_map["Остаток"]].diff().clip(lower=0).fillna(0)
+        dff["diff"] = dff.groupby([col_map["Склад"], col_map["Артикул"]])[col_map["Остаток"]].diff().fillna(0)
+        # Продано: только отрицательные изменения
+        dff["Продано"] = (-dff["diff"]).clip(lower=0)
+        # Пополнено: только положительные изменения
+        dff["Пополнено"] = dff["diff"].clip(lower=0)
+        dff.drop(columns=["diff"], inplace=True)
 
-        # --- готовим Excel ---
+        # --- подготовка Excel ---
         import io
         import xlsxwriter
         output = io.BytesIO()
@@ -1302,22 +1296,17 @@ def download_2025_excel(n_clicks, sklad, article, nom, month):
                 dff_skl = dff[dff[col_map["Склад"]] == skl]
                 cols_to_export = [
                     col_map["Дата"], col_map["Склад"], col_map["Артикул"],
-                    col_map["Номенклатура_канон"], col_map["Номенклатура_варианты"],
-                    "Продано", "Пополнено", col_map["Цена"]
+                    col_map["Остаток"], "Продано", "Пополнено", col_map["Цена"]
                 ]
                 dff_skl_export = dff_skl[cols_to_export].copy()
-                # добавляем знак рубля
+                # цена с ₽
                 dff_skl_export[col_map["Цена"]] = dff_skl_export[col_map["Цена"]].apply(lambda x: f"{x:.2f} ₽")
 
                 dff_skl_export.to_excel(writer, index=False, sheet_name=str(skl)[:31])
-                
-                # --- автоширина колонок ---
+                # автоширина колонок
                 worksheet = writer.sheets[str(skl)[:31]]
                 for i, col in enumerate(dff_skl_export.columns):
-                    max_len = max(
-                        dff_skl_export[col].astype(str).map(len).max(),
-                        len(col)
-                    ) + 2
+                    max_len = max(dff_skl_export[col].astype(str).map(len).max(), len(col)) + 2
                     worksheet.set_column(i, i, max_len)
 
         output.seek(0)
