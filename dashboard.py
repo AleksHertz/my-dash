@@ -1247,7 +1247,7 @@ def download_2025_excel(n_clicks, sklad, article, nom, month):
         dff.columns = [col.strip() for col in dff.columns]
 
         # --- выводим колонки для отладки ---
-        logging.info(f"[download_2025_excel] Колонки df_2025: {dff.columns.tolist()}")
+        print(f"[download_2025_excel] Колонки df_2025: {dff.columns.tolist()}")
 
         # --- сопоставляем ожидаемые имена ---
         col_map = {}
@@ -1256,47 +1256,60 @@ def download_2025_excel(n_clicks, sklad, article, nom, month):
             if matches:
                 col_map[col] = matches[0]
             else:
-                logging.warning(f"[download_2025_excel] Не найдена колонка '{col}' в df_2025")
+                print(f"[download_2025_excel] WARNING: Не найдена колонка '{col}' в df_2025")
+
+        # --- проверяем обязательные колонки для фильтров и расчётов ---
+        required = ["Склад", "Дата", "Остаток"]
+        for r in required:
+            if r not in col_map:
+                print(f"[download_2025_excel] ERROR: обязательная колонка '{r}' отсутствует. Выход.")
+                return dash.no_update
 
         # --- фильтры ---
-        if sklad and col_map.get("Склад"):
+        if sklad and "Склад" in col_map:
             if isinstance(sklad, list):
                 dff = dff[dff[col_map["Склад"]].isin(sklad)]
             else:
                 dff = dff[dff[col_map["Склад"]] == sklad]
 
-        if article and col_map.get("Артикул"):
+        if article and "Артикул" in col_map:
             dff = dff[dff[col_map["Артикул"]] == article]
 
-        if nom and col_map.get("Номенклатура"):
+        if nom and "Номенклатура" in col_map:
             dff = dff[dff[col_map["Номенклатура"]] == nom]
 
-        if month and col_map.get("Дата"):
+        if month and "Дата" in col_map:
             dff = dff[dff[col_map["Дата"]].dt.month == int(month)]
 
         if dff.empty:
-            logging.info("[download_2025_excel] Фильтры вернули пустой датафрейм")
+            print("[download_2025_excel] INFO: Фильтры вернули пустой датафрейм")
             return dash.no_update
 
         # --- расчетные поля ---
-        dff = dff.sort_values([col_map.get("Склад"), col_map.get("Артикул"), col_map.get("Дата")]).reset_index(drop=True)
-        dff["Продано"] = dff.groupby([col_map.get("Склад"), col_map.get("Артикул")])[col_map.get("Остаток")].diff(-1).fillna(0)
-        dff["Пополнено"] = dff.groupby([col_map.get("Склад"), col_map.get("Артикул")])[col_map.get("Остаток")].diff().clip(lower=0).fillna(0)
+        sort_cols = [col_map.get(c) for c in ["Склад", "Артикул", "Дата"] if col_map.get(c)]
+        dff = dff.sort_values(sort_cols).reset_index(drop=True)
+
+        if "Артикул" in col_map:
+            dff["Продано"] = dff.groupby([col_map.get("Склад"), col_map.get("Артикул")])[col_map["Остаток"]].diff(-1).fillna(0)
+            dff["Пополнено"] = dff.groupby([col_map.get("Склад"), col_map.get("Артикул")])[col_map["Остаток"]].diff().clip(lower=0).fillna(0)
+        else:
+            dff["Продано"] = 0
+            dff["Пополнено"] = 0
 
         # --- создаем Excel ---
         import io
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            for skl in dff[col_map.get("Склад")].unique():
-                dff_skl = dff[dff[col_map.get("Склад")] == skl]
-                cols_to_export = [col_map.get(c, c) for c in ["Дата", "Склад", "Артикул", "Номенклатура", "Остаток", "Продано", "Пополнено", "Цена"]]
+            for skl in dff[col_map["Склад"]].unique():
+                dff_skl = dff[dff[col_map["Склад"]] == skl]
+                cols_to_export = [col_map.get(c, c) for c in ["Дата", "Склад", "Артикул", "Номенклатура", "Остаток", "Продано", "Пополнено", "Цена"] if col_map.get(c) or c in ["Продано", "Пополнено"]]
                 dff_skl[cols_to_export].to_excel(writer, index=False, sheet_name=str(skl)[:31])
 
         output.seek(0)
         return dcc.send_bytes(output.read(), filename="данные_2025.xlsx")
 
     except Exception as e:
-        logging.error(f"[download_2025_excel] Ошибка: {e}", exc_info=True)
+        print(f"[download_2025_excel] ERROR: {e}", e.__class__)
         return dash.no_update
         
 if __name__ == '__main__':
