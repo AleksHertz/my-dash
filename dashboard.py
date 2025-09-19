@@ -647,9 +647,6 @@ def normalize_dataframe(df: pd.DataFrame, filename: str) -> pd.DataFrame:
 # --- Колбэк загрузки файла через Dash ---
 @app.callback(
     Output("upload-status", "children"),
-    Output("sklad-2025-filter", "options"),
-    Output("article-2025-filter", "options"),
-    Output("nom-2025-filter", "options"),
     Input("upload-data", "contents"),
     State("upload-data", "filename"),
     prevent_initial_call=True
@@ -658,59 +655,45 @@ def upload_2025_file(contents, filename):
     if contents is None:
         raise dash.exceptions.PreventUpdate
 
-    logging.info(f"[upload_2025_file] Вызов: filename={filename}")
-
-    # --- Сохраняем временный файл ---
-    content_type, content_string = contents.split(',')
-    decoded = base64.b64decode(content_string)
-
-    os.makedirs(TMP_UPLOAD_PATH, exist_ok=True)
-    tmp_path = os.path.join(TMP_UPLOAD_PATH, filename)
-    with open(tmp_path, "wb") as f:
-        f.write(decoded)
-
-    # --- Читаем Excel ---
-    df_new = read_excel_file(tmp_path, sklad_name="auto")
-    if df_new is None or df_new.empty:
-        msg = f"Файл {filename} пуст или некорректен"
-        logging.warning(msg)
-        return msg, dash.no_update, dash.no_update, dash.no_update
-
-    # --- Разбор даты ---
     try:
-        file_date = pd.to_datetime(df_new.iloc[1, 0], dayfirst=True, errors="coerce")
-        if pd.notna(file_date):
-            df_new['Дата'] = file_date
-        else:
+        content_type, content_string = contents.split(',')
+        decoded = base64.b64decode(content_string)
+
+        os.makedirs(TMP_UPLOAD_PATH, exist_ok=True)
+        tmp_path = os.path.join(TMP_UPLOAD_PATH, filename)
+        with open(tmp_path, "wb") as f:
+            f.write(decoded)
+
+        # читаем Excel → DataFrame
+        df_new = read_excel_file(tmp_path, sklad_name="auto")
+        if df_new is None or df_new.empty:
+            return f"Файл {filename} пуст или некорректен"
+
+        # дата из A2
+        try:
+            file_date = pd.to_datetime(df_new.iloc[1, 0], dayfirst=True, errors="coerce")
+            if pd.isna(file_date):
+                file_date = datetime.now()
+        except Exception:
             file_date = datetime.now()
-    except Exception:
-        file_date = datetime.now()
 
-    # --- Сохраняем CSV ---
-    date_str = file_date.strftime("%Y-%m-%d")
-    time_str = datetime.now().strftime("%H-%M")
-    folder_path = os.path.join(TMP_UPLOAD_PATH, "new_uploads")
-    os.makedirs(folder_path, exist_ok=True)
-    csv_path = os.path.join(folder_path, f"new_uploads_{date_str}_{time_str}.csv")
-    df_new.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        # сохраняем в CSV
+        date_str = file_date.strftime("%Y-%m-%d")
+        time_str = datetime.now().strftime("%H-%M")
+        folder_path = os.path.join(TMP_UPLOAD_PATH, "new_uploads")
+        os.makedirs(folder_path, exist_ok=True)
+        csv_path = os.path.join(folder_path, f"new_uploads_{date_str}_{time_str}.csv")
+        df_new.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
-    # --- Асинхронный пуш на GitHub через API ---
-    threading.Thread(target=upload_new_csv_to_github, args=(csv_path,), daemon=True).start()
+        # пушим на GitHub
+        upload_new_csv_to_github(csv_path)
 
-    # --- Обновляем глобальный DataFrame ---
-    global df_2025_clean
-    df_2025 = load_combined_2025()
-    df_2025_clean = df_2025[~df_2025["Аномалия"]].copy() if not df_2025.empty else pd.DataFrame()
+        # сообщение пользователю
+        return f"Файл {filename} загружен и отправлен в GitHub. Railway перезапустит приложение — обновите страницу через минуту."
 
-    # --- Формируем options для фильтров ---
-    sklads_options = [{"label": s, "value": s} for s in sorted(df_2025_clean['Склад'].unique())]
-    articles_options = [{"label": a, "value": a} for a in sorted(df_2025_clean['Артикул_товар'].astype(str).unique())]
-    noms_options = [{"label": n, "value": n} for n in sorted(df_2025_clean['Номенклатура_канон'].unique())]
-
-    msg = f"Файл {filename} обработан и загружен в GitHub"
-    logging.info(msg)
-
-    return msg, sklads_options, articles_options, noms_options
+    except Exception as e:
+        logging.error(f"[upload_2025_file] Ошибка: {e}", exc_info=True)
+        return f"Ошибка при загрузке файла {filename}: {e}"
 
 
 # --- Фоновая функция для запуска github_upload_file ---
