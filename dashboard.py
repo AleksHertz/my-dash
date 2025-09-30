@@ -479,7 +479,7 @@ app.layout = html.Div([
             ]),
         ]),
 
-        # ===================== Новая вкладка 2025 =====================
+        # ===================== Вкладка 2025 =====================
         dcc.Tab(label="Анализ 2025", children=[
             html.Div([
                 # ===================== Загрузка новых данных =====================
@@ -549,20 +549,10 @@ app.layout = html.Div([
                     html.Label("Месяц:"),
                     dcc.Dropdown(
                         id='month-2025-filter',
-                        options=[
-                            {'label': 'Январь', 'value': 1},
-                            {'label': 'Февраль', 'value': 2},
-                            {'label': 'Март', 'value': 3},
-                            {'label': 'Апрель', 'value': 4},
-                            {'label': 'Май', 'value': 5},
-                            {'label': 'Июнь', 'value': 6},
-                            {'label': 'Июль', 'value': 7},
-                            {'label': 'Август', 'value': 8},
-                            {'label': 'Сентябрь', 'value': 9},
-                            {'label': 'Октябрь', 'value': 10},
-                            {'label': 'Ноябрь', 'value': 11},
-                            {'label': 'Декабрь', 'value': 12},
-                        ],
+                        options=[{'label': m, 'value': i+1} for i, m in enumerate([
+                            'Январь','Февраль','Март','Апрель','Май','Июнь',
+                            'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'
+                        ])],
                         multi=False,
                         placeholder="Выберите месяц",
                         clearable=True,
@@ -631,6 +621,97 @@ app.layout = html.Div([
                         className="mt-3"
                     ),
                     dcc.Download(id="download-2025-xlsx"),
+                ], style={"marginTop": "20px"})
+            ])
+        ]),
+
+        # ===================== Новая вкладка Альянс =====================
+        dcc.Tab(label="Альянс", children=[
+            html.Div([
+                html.H2("Анализ данных Альянс"),
+
+                # Фильтры
+                html.Div([
+                    html.Label("Склад:"),
+                    dcc.Dropdown(id="alyans-sklad-filter", multi=True, placeholder="Выберите склад"),
+
+                    html.Label("Группа:"),
+                    dcc.Dropdown(id="alyans-group-filter", multi=True, placeholder="Выберите группу"),
+
+                    html.Label("Артикул:"),
+                    dcc.Dropdown(id="alyans-article-filter", multi=False, placeholder="Выберите артикул"),
+
+                    html.Label("Номенклатура:"),
+                    dcc.Dropdown(id="alyans-nom-filter", multi=False, placeholder="Выберите номенклатуру"),
+
+                    html.Label("Диапазон дат:"),
+                    dcc.DatePickerRange(
+                        id="alyans-date-range",
+                        start_date_placeholder_text="Начало периода",
+                        end_date_placeholder_text="Конец периода",
+                        display_format="DD-MM-YYYY"
+                    ),
+                ], style={'maxWidth': 500, 'marginBottom': 30}),
+
+                # График
+                html.H3("Динамика продаж, пополнений и цены"),
+                dcc.Graph(id="alyans-line-graph"),
+
+                # Таблица ТОП
+                html.Div([
+                    html.Label("Размер ТОПа:"),
+                    dcc.RadioItems(
+                        id="alyans-top-size",
+                        options=[
+                            {"label": "Топ-100", "value": 100},
+                            {"label": "Топ-250", "value": 250},
+                            {"label": "Топ-500", "value": 500},
+                        ],
+                        value=100,
+                        inline=True
+                    ),
+                ], style={"marginBottom": "10px"}),
+
+                html.H3(id="alyans-top-title", style={"marginTop": "20px"}),
+
+                dash_table.DataTable(
+                    id="alyans-top-table",
+                    columns=[
+                        {"name": "Артикул", "id": "Артикул"},
+                        {"name": "Номенклатура", "id": "Номенклатура"},
+                        {"name": "Продано", "id": "Продано"},
+                        {"name": "Пополнено", "id": "Пополнено"},
+                        {"name": "Склад", "id": "Склад"},
+                    ],
+                    style_table={
+                        "overflowX": "auto",
+                        "maxHeight": "500px",
+                        "overflowY": "scroll",
+                        "width": "100%",
+                    },
+                    style_cell={
+                        "textAlign": "left",
+                        "padding": "5px",
+                        "whiteSpace": "normal",
+                        "height": "auto",
+                    },
+                    style_header={
+                        "fontWeight": "bold",
+                        "backgroundColor": "#f0f0f0",
+                    },
+                    page_size=20,
+                    row_selectable="single",
+                ),
+
+                # Кнопка выгрузки
+                html.Div([
+                    dbc.Button(
+                        "📥 Выгрузить в Excel (с учётом фильтров)",
+                        id="download-alyans-btn",
+                        color="primary",
+                        className="mt-3"
+                    ),
+                    dcc.Download(id="download-alyans-xlsx"),
                 ], style={"marginTop": "20px"})
             ])
         ])
