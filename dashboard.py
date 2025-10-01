@@ -531,11 +531,10 @@ server = app.server
 app.layout = html.Div([
     html.H1("Анализ складских данных"),
 
-    dcc.Tabs([
+    dcc.Tabs(id="tabs", value="main", children=[
 
         # ===================== Основной анализ =====================
-        dcc.Tab(label="Основной анализ", children=[
-            # ===================== Блок ТОПЫ =====================
+        dcc.Tab(label="Основной анализ", value="main", children=[
             html.Div([
                 html.H2("ТОПы по складам"),
 
@@ -566,21 +565,12 @@ app.layout = html.Div([
                 html.H3("Топ самых ходовых товаров"),
                 html.Div(
                     dcc.Graph(id='graph-top-fast'),
-                    style={
-                        'height': '700px',
-                        'overflowY': 'scroll',
-                        'border': '1px solid #ddd',
-                        'padding': '5px',
-                        'marginBottom': '10px',
-                        'backgroundColor': 'white'
-                    }
+                    style={'height': '700px', 'overflowY': 'scroll',
+                           'border': '1px solid #ddd', 'padding': '5px',
+                           'marginBottom': '10px', 'backgroundColor': 'white'}
                 ),
-                dbc.Button(
-                    "📥 Выгрузить топ ходовых в Excel",
-                    id="download-top-fast-btn",
-                    color="success",
-                    className="mb-4"
-                ),
+                dbc.Button("📥 Выгрузить топ ходовых в Excel",
+                           id="download-top-fast-btn", color="success", className="mb-4"),
 
                 html.Label("Выберите количество позиций для отображения товаров по пополнениям:"),
                 dcc.RadioItems(
@@ -598,26 +588,17 @@ app.layout = html.Div([
                 html.H3("Топ товаров по пополнениям"),
                 html.Div(
                     dcc.Graph(id='graph-top-restock'),
-                    style={
-                        'height': '700px',
-                        'overflowY': 'scroll',
-                        'border': '1px solid #ddd',
-                        'padding': '5px',
-                        'marginBottom': '10px',
-                        'backgroundColor': 'white'
-                    }
+                    style={'height': '700px', 'overflowY': 'scroll',
+                           'border': '1px solid #ddd', 'padding': '5px',
+                           'marginBottom': '10px', 'backgroundColor': 'white'}
                 ),
-                dbc.Button(
-                    "📥 Выгрузить топ пополнений в Excel",
-                    id="download-top-restock-btn",
-                    color="success"
-                ),
+                dbc.Button("📥 Выгрузить топ пополнений в Excel",
+                           id="download-top-restock-btn", color="success"),
 
                 dcc.Download(id="download-top-fast"),
                 dcc.Download(id="download-top-restock"),
             ], style={'marginBottom': 40}),
 
-            # ===================== Блок ВСПЛЕСКИ =====================
             html.Div([
                 html.H2("Всплески продаж"),
                 html.Div([
@@ -629,7 +610,6 @@ app.layout = html.Div([
                         placeholder="Выберите склад для всплесков",
                         clearable=True,
                     ),
-
                     html.Label("Артикул:"),
                     dcc.Dropdown(
                         id='peak-article-filter',
@@ -638,7 +618,6 @@ app.layout = html.Div([
                         placeholder="Выберите артикул",
                         clearable=True,
                     ),
-
                     html.Label("Номенклатура:"),
                     dcc.Dropdown(
                         id='peak-nom-filter',
@@ -649,19 +628,11 @@ app.layout = html.Div([
                         searchable=True,
                         style={'width': '100%'}
                     ),
-
                     html.Button("📥 Скачать в Excel", id="btn-download-peaks", n_clicks=0),
                     dcc.Download(id="download-peaks-xlsx"),
-                ], style={
-                    'maxWidth': 450,
-                    'marginBottom': 30,
-                    'display': 'flex',
-                    'flexDirection': 'column',
-                    'gap': '10px'
-                }),
-
+                ], style={'maxWidth': 450, 'marginBottom': 30,
+                          'display': 'flex', 'flexDirection': 'column', 'gap': '10px'}),
                 dcc.Graph(id='graph-peaks'),
-
                 html.Div([
                     html.P("График отображает:"),
                     html.Ul([
@@ -669,45 +640,24 @@ app.layout = html.Div([
                         html.Li("Средняя цена (пунктирная линия, правая ось)"),
                         html.Li("Изменение цены в процентах (штриховая линия, правая ось)"),
                     ]),
-                ], style={
-                    'maxWidth': 600,
-                    'fontStyle': 'italic',
-                    'color': 'gray',
-                    'marginTop': 10
-                }),
+                ], style={'maxWidth': 600, 'fontStyle': 'italic', 'color': 'gray', 'marginTop': 10}),
             ]),
         ]),
 
         # ===================== Вкладка 2025 =====================
-        dcc.Tab(label="Анализ 2025", children=[
+        dcc.Tab(label="Анализ 2025", value="2025", children=[
             html.Div([
                 html.H3("Загрузить новые данные"),
                 dcc.Upload(
                     id='upload-data',
-                    children=html.Div([
-                        'Перетащите файл сюда или ',
-                        html.A('выберите файл')
-                    ]),
-                    style={
-                        'width': '100%',
-                        'height': '60px',
-                        'lineHeight': '60px',
-                        'borderWidth': '1px',
-                        'borderStyle': 'dashed',
-                        'borderRadius': '5px',
-                        'textAlign': 'center',
-                        'marginBottom': '20px'
-                    },
+                    children=html.Div(['Перетащите файл сюда или ', html.A('выберите файл')]),
+                    style={'width': '100%', 'height': '60px', 'lineHeight': '60px',
+                           'borderWidth': '1px', 'borderStyle': 'dashed', 'borderRadius': '5px',
+                           'textAlign': 'center', 'marginBottom': '20px'},
                     multiple=False
                 ),
-                dcc.Loading(
-                    id="loading-upload",
-                    type="circle",
-                    children=html.Div(
-                        id='upload-status',
-                        style={'marginTop': '10px', 'color': 'green'}
-                    )
-                ),
+                dcc.Loading(id="loading-upload", type="circle",
+                            children=html.Div(id='upload-status', style={'marginTop': '10px', 'color': 'green'})),
 
                 html.Div([
                     html.Label("Склад:"),
@@ -715,32 +665,23 @@ app.layout = html.Div([
                         id='sklad-2025-filter',
                         options=[{'label': s, 'value': s} for s in unique_sklads_2025],
                         value=unique_sklads_2025,
-                        multi=True,
-                        placeholder="Выберите склад",
-                        clearable=True,
+                        multi=True, placeholder="Выберите склад", clearable=True,
                         style={'marginBottom': '15px'}
                     ),
-
                     html.Label("Артикул:"),
                     dcc.Dropdown(
                         id='article-2025-filter',
                         options=[{'label': a, 'value': a} for a in unique_articles_2025],
-                        multi=False,
-                        placeholder="Выберите артикул",
-                        clearable=True,
+                        multi=False, placeholder="Выберите артикул", clearable=True,
                         style={'marginBottom': '15px'}
                     ),
-
                     html.Label("Номенклатура:"),
                     dcc.Dropdown(
                         id='nom-2025-filter',
                         options=[{'label': n, 'value': n} for n in unique_noms_2025],
-                        multi=False,
-                        placeholder="Выберите номенклатуру",
-                        clearable=True,
+                        multi=False, placeholder="Выберите номенклатуру", clearable=True,
                         style={'marginBottom': '15px'}
                     ),
-
                     html.Label("Месяц:"),
                     dcc.Dropdown(
                         id='month-2025-filter',
@@ -748,9 +689,7 @@ app.layout = html.Div([
                             'Январь','Февраль','Март','Апрель','Май','Июнь',
                             'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'
                         ])],
-                        multi=False,
-                        placeholder="Выберите месяц",
-                        clearable=True,
+                        multi=False, placeholder="Выберите месяц", clearable=True,
                         style={'marginBottom': '20px'}
                     ),
                 ], style={'maxWidth': 500, 'marginBottom': 30}),
@@ -768,8 +707,7 @@ app.layout = html.Div([
                             {"label": "Топ-250", "value": 250},
                             {"label": "Топ-500", "value": 500},
                         ],
-                        value=100,
-                        inline=True
+                        value=100, inline=True
                     ),
                 ], style={"marginBottom": "10px"}),
 
@@ -783,49 +721,43 @@ app.layout = html.Div([
                         {"name": "Продано", "id": "Продано"},
                         {"name": "Склад", "id": "Склад"},
                     ],
-                    style_table={
-                        "overflowX": "auto",
-                        "maxHeight": "500px",
-                        "overflowY": "scroll",
-                        "width": "100%",
-                    },
-                    style_cell={
-                        "textAlign": "left",
-                        "padding": "5px",
-                        "textDecoration": "none",
-                        "whiteSpace": "normal",
-                        "height": "auto",
-                    },
-                    style_header={
-                        "fontWeight": "bold",
-                        "backgroundColor": "#f0f0f0",
-                        "textDecoration": "none",
-                    },
-                    page_size=20,
-                    row_selectable="single",
+                    style_table={"overflowX": "auto", "maxHeight": "500px",
+                                 "overflowY": "scroll", "width": "100%"},
+                    style_cell={"textAlign": "left", "padding": "5px",
+                                "textDecoration": "none", "whiteSpace": "normal", "height": "auto"},
+                    style_header={"fontWeight": "bold", "backgroundColor": "#f0f0f0", "textDecoration": "none"},
+                    page_size=20, row_selectable="single",
                 ),
 
                 html.Div([
-                    dbc.Button(
-                        "📥 Выгрузить в Excel (с учётом фильтров)",
-                        id="download-2025-btn",
-                        color="primary",
-                        className="mt-3"
-                    ),
+                    dbc.Button("📥 Выгрузить в Excel (с учётом фильтров)",
+                               id="download-2025-btn", color="primary", className="mt-3"),
                     dcc.Download(id="download-2025-xlsx"),
                 ], style={"marginTop": "20px"})
             ])
         ]),
 
-        # ===================== Новая вкладка Альянс =====================
-        dcc.Tab(label="Альянс", children=[
+        # ===================== Вкладка Альянс =====================
+        dcc.Tab(label="Альянс", value="alyans", children=[
             html.Div([
                 html.H2("Анализ данных Альянс"),
 
-                # --- Фильтры ---
-                html.Div(id="alyans-filters", style={'maxWidth': 500, 'marginBottom': 30}),
+                html.Label("Склад:"),
+                dcc.Dropdown(
+                    id="alyans-sklad",
+                    multi=True,
+                    options=[{"label": s, "value": s} for s in _ensure_list(get_unique_sklads())],
+                    placeholder="Выберите склад"
+                ),
 
-                # --- График ---
+                html.Label("Группа:"),
+                dcc.Dropdown(
+                    id="alyans-group",
+                    multi=True,
+                    options=[{"label": g, "value": g} for g in _ensure_list(get_unique_groups())],
+                    placeholder="Выберите группу"
+                ),
+
                 html.H3("Динамика остатков и продаж по выбранному товару"),
                 dcc.Loading(
                     id="loading-alyans-graph",
@@ -833,7 +765,6 @@ app.layout = html.Div([
                     children=dcc.Graph(id="alyans-graph")
                 ),
 
-                # --- Таблица ТОП ---
                 html.Div([
                     html.Label("Размер ТОПа:"),
                     dcc.RadioItems(
@@ -861,38 +792,20 @@ app.layout = html.Div([
                             {"name": "Продано", "id": "Продано"},
                             {"name": "Склад", "id": "Склад"},
                         ],
-                        style_table={
-                            "overflowX": "auto",
-                            "maxHeight": "500px",
-                            "overflowY": "scroll",
-                            "width": "100%",
-                        },
-                        style_cell={
-                            "textAlign": "left",
-                            "padding": "5px",
-                            "whiteSpace": "normal",
-                            "height": "auto",
-                        },
-                        style_header={
-                            "fontWeight": "bold",
-                            "backgroundColor": "#f0f0f0",
-                        },
-                        page_size=20,
-                        row_selectable="single",
+                        style_table={"overflowX": "auto", "maxHeight": "500px", "overflowY": "scroll", "width": "100%"},
+                        style_cell={"textAlign": "left", "padding": "5px", "whiteSpace": "normal", "height": "auto"},
+                        style_header={"fontWeight": "bold", "backgroundColor": "#f0f0f0"},
+                        page_size=20, row_selectable="single",
                     )
                 ),
 
                 html.Div([
-                    dbc.Button(
-                        "📥 Выгрузить в Excel (с учётом фильтров)",
-                        id="download-alyans-btn",
-                        color="primary",
-                        className="mt-3"
-                    ),
+                    dbc.Button("📥 Выгрузить в Excel (с учётом фильтров)",
+                               id="download-alyans-btn", color="primary", className="mt-3"),
                     dcc.Download(id="download-alyans-xlsx"),
                 ], style={"marginTop": "20px"})
             ])
-        ])
+        ]),
     ])
 ])
 # --------------------
