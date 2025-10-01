@@ -29,6 +29,8 @@ import time
 import threading
 from datetime import datetime
 import subprocess
+import psycopg2
+from sqlalchemy import create_engine
 # --------------------
 # НАСТРОЙКИ
 # --------------------
@@ -75,6 +77,36 @@ unique_sklads = df_result['Склад'].dropna().unique().tolist() if not df_res
 unique_peak_sklads = sorted(df_peaks['Склад'].dropna().unique()) if not df_peaks.empty else []
 unique_peak_articles = sorted(df_peaks['Артикул'].dropna().unique()) if not df_peaks.empty else []
 unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()) if not df_peaks.empty else []
+
+# URL из Railway
+DB_URL = "postgresql://postgres:SyngvjjliGqUBYDKibMmoOWCVUZVdFjc@tramway.proxy.rlwy.net:13502/railway"
+
+# Движок SQLAlchemy
+engine = create_engine(DB_URL)
+
+def load_alyans_data():
+    """Загрузка данных из базы"""
+    query = """
+    SELECT дата, склад, артикул_товар, артикул_производителя, 
+           наименование, количество, цена, производитель, марка, группа, остаток
+    FROM alyans_data;
+    """
+    df = pd.read_sql(query, engine)
+
+    # Преобразования
+    df["дата"] = pd.to_datetime(df["дата"])
+    df["артикул_товар"] = df["артикул_товар"].astype(str)
+    df["остаток"] = pd.to_numeric(df["остаток"], errors="coerce").fillna(0)
+    df["цена"] = pd.to_numeric(df["цена"].replace("[\$,]", "", regex=True), errors="coerce").fillna(0)
+
+    return df
+
+# Загружаем один раз при старте
+df_alyans = load_alyans_data()
+
+# Уникальные значения для фильтров
+unique_sklads_alyans = sorted(df_alyans["склад"].dropna().unique().tolist())
+unique_groups_alyans = sorted(df_alyans["группа"].dropna().unique().tolist())
 
 
 # --- Функции подготовки данных ---
@@ -722,6 +754,112 @@ app.layout = html.Div([
 # --------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# --- Таблица ТОП-N ---
+@app.callback(
+    Output("alyans-top-table", "data"),
+    Output("alyans-top-table", "selected_rows"),
+    Output("alyans-top-title", "children"),
+    Input("alyans-sklad-filter", "value"),
+    Input("alyans-group-filter", "value"),
+    Input("alyans-top-size", "value"),
+    State("alyans-top-table", "data"),
+    State("alyans-top-table", "selected_rows"),
+)
+def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev_selected):
+    dff = df_alyans.copy()
+
+    # Фильтры
+    if selected_sklads:
+        dff = dff[dff["склад"].isin(selected_sklads)]
+    if selected_groups:
+        dff = dff[dff["группа"].isin(selected_groups)]
+
+    if dff.empty:
+        return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
+
+    # --- Расчет "продано" как разница остатков ---
+    dff = dff.sort_values(["артикул_товар", "склад", "дата"])
+    dff["продано"] = dff.groupby(["артикул_товар", "склад"])["остаток"].diff(-1).clip(lower=0).fillna(0)
+
+    top_df = (
+        dff.groupby(["артикул_товар", "наименование", "склад"], as_index=False)
+           .agg({"продано": "sum"})
+           .sort_values("продано", ascending=False)
+           .head(top_n)
+    )
+
+    # Переименование для таблицы
+    top_df = top_df.rename(columns={
+        "артикул_товар": "Артикул",
+        "наименование": "Наименование",
+        "продано": "Продано",
+        "склад": "Склад"
+    })
+
+    records = top_df.to_dict("records")
+
+    # Сохраняем выделение
+    if prev_selected and prev_data:
+        try:
+            old_row = prev_data[prev_selected[0]]
+            for idx, row in enumerate(records):
+                if row["Артикул"] == old_row["Артикул"] and row["Наименование"] == old_row["Наименование"]:
+                    return records, [idx], f"ТОП-{top_n} товаров по продажам (Альянс)"
+        except Exception:
+            pass
+
+    return records, [], f"ТОП-{top_n} товаров по продажам (Альянс)"
+
+# --- График по выбранному товару ---
+@app.callback(
+    Output("alyans-graph", "figure"),
+    Input("alyans-top-table", "selected_rows"),
+    State("alyans-top-table", "data"),
+    Input("alyans-sklad-filter", "value"),
+)
+def update_alyans_graph(selected_rows, table_data, selected_sklads):
+    if not selected_rows or not table_data:
+        return go.Figure(layout=go.Layout(
+            title="Выберите товар из таблицы ТОП для отображения графика",
+            xaxis_title="Дата", yaxis_title="Остаток"
+        ))
+
+    row = table_data[selected_rows[0]]
+    article = row["Артикул"]
+    name = row["Наименование"]
+
+    dff = df_alyans[df_alyans["артикул_товар"] == article].copy()
+    if selected_sklads:
+        dff = dff[dff["склад"].isin(selected_sklads)]
+
+    fig = go.Figure()
+    for sklad in dff["склад"].unique():
+        df_s = dff[dff["склад"] == sklad].sort_values("дата")
+        df_s["продано_fix"] = (df_s["остаток"].shift(1) - df_s["остаток"]).clip(lower=0).fillna(0)
+
+        fig.add_trace(go.Scatter(
+            x=df_s["дата"], y=df_s["остаток"],
+            mode="lines+markers", name=sklad,
+            text=[sklad]*len(df_s),
+            customdata=df_s[["продано_fix", "цена"]].values,
+            hovertemplate=(
+                "<b>Склад:</b> %{text}<br>"
+                "<b>Дата:</b> %{x|%d-%m-%Y}<br>"
+                "<b>Остаток:</b> %{y}<br>"
+                "<b>Продано:</b> %{customdata[0]}<br>"
+                "<b>Цена:</b> %{customdata[1]} ₽<extra></extra>"
+            )
+        ))
+
+    fig.update_layout(
+        title=f"Динамика остатков и продаж — {article} ({name})",
+        xaxis_title="Дата", yaxis_title="Остаток",
+        hovermode="closest"
+    )
+    return fig
+
 
 
 # --- Утилиты ---
