@@ -795,32 +795,64 @@ def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
-    df = get_top_products(engine=engine, top_n=top_n, sklads=sklads, groups=groups)
+    if not sklads and not groups:
+        return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
 
-    title = f"ТОП-{top_n} товаров по продажам (Альянс)"
-    if df.empty:
-        return [], [], title
+    try:
+        # Получаем данные только по выбранным фильтрам
+        df_chunks = []
+        sql = """
+            SELECT дата, склад, артикул_товар, наименование, остаток
+            FROM alyans_data
+            WHERE 1=1
+        """
+        params = {}
+        if sklads:
+            sql += " AND склад = ANY(:sklads)"
+            params["sklads"] = sklads
+        if groups:
+            sql += " AND группа = ANY(:groups)"
+            params["groups"] = groups
 
-    df = df.rename(columns={
-        "артикул_товар": "Артикул",
-        "наименование": "Наименование",
-        "склад": "Склад",
-        "продано": "Продано"
-    })
+        sql += " ORDER BY склад, артикул_товар, дата"
 
-    records = df.to_dict("records")
+        # Чанки по 10000, чтобы не вываливался DiskFull
+        for chunk in pd.read_sql(text(sql), engine, params=params, chunksize=10000):
+            df_chunks.append(chunk)
 
-    # Сохраняем выбор пользователя
-    if prev_selected and prev_data:
-        try:
-            old_row = prev_data[prev_selected[0]]
-            for idx, row in enumerate(records):
-                if row["Артикул"] == old_row["Артикул"] and row["Наименование"] == old_row["Наименование"]:
-                    return records, [idx], title
-        except Exception:
-            pass
+        if not df_chunks:
+            return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
 
-    return records, [], title
+        df = pd.concat(df_chunks, ignore_index=True)
+
+        # Считаем продажи
+        df['Продано'] = df.groupby(['склад', 'артикул_товар'])['остаток'].diff(-1).fillna(0).clip(lower=0)
+        df_top = df.groupby(['склад', 'артикул_товар', 'наименование'], as_index=False)['Продано'].sum()
+        df_top = df_top.sort_values('Продано', ascending=False).head(top_n)
+
+        df_top = df_top.rename(columns={
+            "артикул_товар": "Артикул",
+            "наименование": "Наименование",
+            "склад": "Склад",
+        })
+
+        records = df_top.to_dict("records")
+
+        # Сохраняем выбор пользователя
+        if prev_selected and prev_data:
+            try:
+                old_row = prev_data[prev_selected[0]]
+                for idx, row in enumerate(records):
+                    if row["Артикул"] == old_row["Артикул"] and row["Наименование"] == old_row["Наименование"]:
+                        return records, [idx], f"ТОП-{top_n} товаров по продажам (Альянс)"
+            except Exception:
+                pass
+
+        return records, [], f"ТОП-{top_n} товаров по продажам (Альянс)"
+
+    except Exception as e:
+        print(f"[update_alyans_table] Ошибка получения данных: {e}")
+        return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
 
 
 # -------------------- Колбэк для графика по выбранному товару --------------------
@@ -833,22 +865,43 @@ def update_alyans_graph(selected_sklads, selected_groups):
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
-    try:
-        # Берём топ-5000 для графика (или меньше, если мало данных)
-        df = get_top_products(engine=engine, top_n=5000, sklads=sklads, groups=groups)
+    if not sklads and not groups:
+        return go.Figure()
 
-        if df.empty:
+    try:
+        # Берём топ-5000 для графика
+        df_chunks = []
+        sql = """
+            SELECT дата, склад, артикул_товар, наименование, остаток
+            FROM alyans_data
+            WHERE 1=1
+        """
+        params = {}
+        if sklads:
+            sql += " AND склад = ANY(:sklads)"
+            params["sklads"] = sklads
+        if groups:
+            sql += " AND группа = ANY(:groups)"
+            params["groups"] = groups
+
+        sql += " ORDER BY склад, артикул_товар, дата"
+
+        for chunk in pd.read_sql(text(sql), engine, params=params, chunksize=10000):
+            df_chunks.append(chunk)
+
+        if not df_chunks:
             return go.Figure()
 
-        # Сортируем и готовим график
-        df = df.sort_values(['Склад', 'Продано'], ascending=[True, False])
+        df = pd.concat(df_chunks, ignore_index=True)
+        df['Продано'] = df.groupby(['склад', 'артикул_товар'])['остаток'].diff(-1).fillna(0).clip(lower=0)
+        df_top = df.groupby(['склад', 'артикул_товар', 'наименование'], as_index=False)['Продано'].sum()
+        df_top = df_top.sort_values('Продано', ascending=False).head(5000)
 
         fig = go.Figure()
-
-        for sklad in df['Склад'].unique():
-            df_s = df[df['Склад'] == sklad]
+        for sklad in df_top['склад'].unique():
+            df_s = df_top[df_top['склад'] == sklad]
             fig.add_trace(go.Bar(
-                x=df_s['Наименование'],
+                x=df_s['наименование'],
                 y=df_s['Продано'],
                 name=f"Склад {sklad}"
             ))
@@ -862,13 +915,11 @@ def update_alyans_graph(selected_sklads, selected_groups):
             template='plotly_white',
             height=500
         )
-
         return fig
 
     except Exception as e:
         print(f"[update_alyans_graph] Ошибка получения данных: {e}")
         return go.Figure()
-
 
 
 # --- Утилиты ---
