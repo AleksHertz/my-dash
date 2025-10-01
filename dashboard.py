@@ -803,7 +803,8 @@ def update_alyans_table(selected_sklads, selected_groups, top_n):
 
     try:
         sql = """
-            SELECT склад, артикул_товар, наименование, SUM(остаток) AS продано
+            SELECT склад, артикул_товар, наименование,
+                   SUM("Всего_продано") AS продано
             FROM alyans_data
             WHERE 1=1
         """
@@ -854,7 +855,10 @@ def update_alyans_graph(table_data, selected_rows):
         artikul = selected["Артикул"]
 
         sql = """
-            SELECT дата, SUM(остаток) AS продано
+            SELECT дата,
+                   SUM("Всего_продано") AS продано,
+                   AVG("Цена_в_начале_дня") AS цена,
+                   AVG(остаток) AS остаток
             FROM alyans_data
             WHERE склад = :sklad AND артикул_товар = :artikul
             GROUP BY дата
@@ -871,8 +875,9 @@ def update_alyans_graph(table_data, selected_rows):
             x=df["дата"],
             y=df["продано"],
             mode="lines+markers",
-            name=artikul,
-            hovertemplate="Дата: %{x}<br>Продано: %{y}"
+            name="Продано",
+            hovertemplate="Дата: %{x}<br>Продано: %{y}<br>Цена: %{customdata[0]}<br>Остаток: %{customdata[1]}",
+            customdata=df[["цена", "остаток"]].values
         ))
 
         fig.update_layout(
