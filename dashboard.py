@@ -795,28 +795,21 @@ def load_filters(active_tab):
     State("alyans-table", "data"),
     State("alyans-table", "selected_rows")
 )
-def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev_selected):
+def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev_selected, engine=engine):
     top_n = int(top_n or 100)
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
-    title = f"ТОП-{top_n} товаров по продажам (Альянс)"
-
-    # Безопасная обработка: если нет фильтра — возвращаем пустую таблицу
-    if not sklads and not groups:
-        return [], [], title
-
     try:
-        # Получаем данные полностью, с фильтром по складам и группам
-        df = get_top_products(top_n=top_n, sklads=sklads, groups=groups)
+        df = get_top_products(engine=engine, top_n=top_n, sklads=sklads, groups=groups)
     except Exception as e:
         print(f"[update_alyans_table] Ошибка получения данных: {e}")
-        return [], [], title
+        return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
 
+    title = f"ТОП-{top_n} товаров по продажам (Альянс)"
     if df.empty:
         return [], [], title
 
-    # Переименование колонок для DataTable
     df = df.rename(columns={
         "артикул_товар": "Артикул",
         "наименование": "Наименование",
@@ -826,32 +819,29 @@ def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev
 
     records = df.to_dict("records")
 
-    # Попытка сохранить выбор пользователя
-    selected_rows = []
+    # Восстановление выбора пользователя
     if prev_selected and prev_data:
         try:
-            prev_row = prev_data[prev_selected[0]]
+            old_row = prev_data[prev_selected[0]]
             for idx, row in enumerate(records):
-                if row["Артикул"] == prev_row["Артикул"] and row["Наименование"] == prev_row["Наименование"]:
-                    selected_rows = [idx]
-                    break
+                if row["Артикул"] == old_row["Артикул"] and row["Наименование"] == old_row["Наименование"]:
+                    return records, [idx], title
         except Exception:
             pass
 
-    return records, selected_rows, title
+    return records, [], title
 
 
 # -------------------- Колбэк для графика по выбранному товару --------------------
 @app.callback(
     Output("alyans-graph", "figure"),
     Input("alyans-sklad", "value"),
-    Input("alyans-group", "value"),
+    Input("alyans-group", "value")
 )
-def update_alyans_graph(selected_sklads, selected_groups):
+def update_alyans_graph(selected_sklads, selected_groups, engine=engine):
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
-    # Создаём пустую фигуру по умолчанию
     fig = go.Figure()
     fig.update_layout(
         title="Динамика остатков и продаж по выбранному товару",
@@ -860,13 +850,11 @@ def update_alyans_graph(selected_sklads, selected_groups):
         template="plotly_white"
     )
 
-    # Без фильтра — возвращаем пустую фигуру
     if not sklads and not groups:
         return fig
 
     try:
-        # Получаем данные с фильтром по складам и группам
-        df = get_top_products(top_n=None, sklads=sklads, groups=groups)  # топ_n=None — все данные
+        df = get_top_products(engine=engine, top_n=None, sklads=sklads, groups=groups)
     except Exception as e:
         print(f"[update_alyans_graph] Ошибка получения данных: {e}")
         return fig
@@ -874,7 +862,6 @@ def update_alyans_graph(selected_sklads, selected_groups):
     if df.empty:
         return fig
 
-    # Суммируем по дате и создаём линии
     df_grouped = df.groupby("дата").agg({"продано": "sum", "остаток": "sum"}).reset_index()
 
     fig.add_trace(go.Scatter(
