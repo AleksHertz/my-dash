@@ -120,18 +120,12 @@ def get_unique_groups():
         return []
 
 
-def get_top_products(top_n=100, sklads=None, groups=None, chunksize=200_000):
-    """
-    Возвращает DataFrame с колонками:
-    артикул_товар, наименование, склад, продано (сумма положительных diffs)
-    Сначала пытается выполнить оконный SQL (быстрее), при ошибке - fallback через потоковую обработку чанками.
-    """
-    sklads = sklads if (sklads is None or isinstance(sklads, (list, tuple))) else [sklads]
-    groups = groups if (groups is None or isinstance(groups, (list, tuple))) else [groups]
-
-    # --- Построение WHERE и params ---
+def get_top_products(top_n=100, sklads=None, groups=None, chunksize=100_000):
+    sklads = _ensure_list(sklads)
+    groups = _ensure_list(groups)
+    
     filters = []
-    params = {"top_n": int(top_n)}
+    params = {}
     if sklads:
         filters.append("склад = ANY(:sklads)")
         params["sklads"] = sklads
@@ -139,91 +133,55 @@ def get_top_products(top_n=100, sklads=None, groups=None, chunksize=200_000):
         filters.append("группа = ANY(:groups)")
         params["groups"] = groups
     where_clause = "WHERE " + " AND ".join(filters) if filters else ""
-
-    # --- Первый (предпочтительный) вариант: оконный SQL с LAG ---
-    window_sql = f"""
-    WITH diffs AS (
-        SELECT
-            дата,
-            склад,
-            артикул_товар,
-            наименование,
-            (LAG(остаток) OVER (PARTITION BY склад, артикул_товар ORDER BY дата) - остаток) AS продано
+    
+    sql = f"""
+        SELECT дата, склад, артикул_товар, наименование, остаток
         FROM alyans_data
         {where_clause}
-    )
-    SELECT артикул_товар, наименование, склад, SUM(GREATEST(продано, 0)) AS продано
-    FROM diffs
-    GROUP BY артикул_товар, наименование, склад
-    ORDER BY продано DESC
-    LIMIT :top_n;
+        ORDER BY склад, артикул_товар, дата
     """
-
-    try:
-        q = text(window_sql)
-        with engine.connect() as conn:
-            df = pd.read_sql(q, conn, params=params)
-        if df is None or df.empty:
-            return pd.DataFrame(columns=["артикул_товар", "наименование", "склад", "продано"])
-        return df
-    except OperationalError:
-        logging.exception("[get_top_products] Ошибка выполнения оконного запроса, fallback к потоковой обработке")
-    except Exception:
-        logging.exception("[get_top_products] Неожиданная ошибка оконного запроса, fallback к потоковой обработке")
-
-    # --- Fallback: потоковая обработка чанками ---
-    logging.info("[get_top_products] Работа в fallback режиме (чанки).")
-
-    cols_sql = "дата, склад, артикул_товар, наименование, остаток"
-    sql = f"""
-    SELECT {cols_sql}
-    FROM alyans_data
-    {where_clause}
-    ORDER BY склад, артикул_товар, дата
-    """
-
-    prod_sums = defaultdict(float)   # ключ: (артикул, наименование, склад) -> сумма продано
-    prev_last = {}  # ключ: (склад, артикул) -> последний остаток (float)
-
+    
+    prod_sums = defaultdict(float)
+    prev_last = {}
+    
     try:
         for chunk in pd.read_sql(text(sql), engine, params=params, chunksize=chunksize):
             if chunk.empty:
                 continue
-            chunk['остаток'] = pd.to_numeric(chunk['остаток'], errors='coerce').fillna(0).astype(float)
+            chunk['остаток'] = pd.to_numeric(chunk['остаток'], errors='coerce').fillna(0)
             chunk = chunk.sort_values(['склад', 'артикул_товар', 'дата'])
-
             gb = chunk.groupby(['склад', 'артикул_товар'], sort=False)
+            
             for (sklad, art), grp in gb:
                 arr = grp['остаток'].to_numpy(dtype=float)
                 if arr.size == 0:
                     continue
                 key_name = grp['наименование'].iat[0] if 'наименование' in grp.columns else None
                 map_key = (art, key_name, sklad)
-
+                
                 prev = prev_last.get((sklad, art))
                 if prev is not None:
                     d0 = prev - arr[0]
                     if d0 > 0:
                         prod_sums[map_key] += float(d0)
-
+                
                 if arr.size > 1:
                     diffs = arr[:-1] - arr[1:]
-                    pos = float(np.sum(diffs[diffs > 0]))
-                    prod_sums[map_key] += pos
-
+                    prod_sums[map_key] += float(np.sum(diffs[diffs > 0]))
+                
                 prev_last[(sklad, art)] = float(arr[-1])
-
+        
         if not prod_sums:
             return pd.DataFrame(columns=["артикул_товар", "наименование", "склад", "продано"])
-
+        
         rows = [{"артикул_товар": art, "наименование": name, "склад": sklad, "продано": val}
                 for (art, name, sklad), val in prod_sums.items()]
         df_res = pd.DataFrame(rows)
         df_res = df_res.sort_values("продано", ascending=False).head(int(top_n)).reset_index(drop=True)
         return df_res
-
+    
     except Exception:
-        logging.exception("[get_top_products] Ошибка в потоковом режиме")
+        logging.exception("[get_top_products] Ошибка потоковой обработки")
         return pd.DataFrame(columns=["артикул_товар", "наименование", "склад", "продано"])
 
 
