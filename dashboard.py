@@ -120,70 +120,64 @@ def get_unique_groups():
         return []
 
 
-def get_top_products(top_n=100, sklads=None, groups=None, chunksize=100_000):
-    sklads = _ensure_list(sklads)
-    groups = _ensure_list(groups)
-    
-    filters = []
-    params = {}
-    if sklads:
-        filters.append("склад = ANY(:sklads)")
-        params["sklads"] = sklads
-    if groups:
-        filters.append("группа = ANY(:groups)")
-        params["groups"] = groups
-    where_clause = "WHERE " + " AND ".join(filters) if filters else ""
-    
-    sql = f"""
-        SELECT дата, склад, артикул_товар, наименование, остаток
-        FROM alyans_data
-        {where_clause}
-        ORDER BY склад, артикул_товар, дата
+def get_top_products(engine, top_n=100, sklads=None, groups=None, chunksize=50000):
     """
+    Получить топ товаров по складам или группам с минимальной нагрузкой на PostgreSQL.
     
-    prod_sums = defaultdict(float)
-    prev_last = {}
-    
+    :param engine: SQLAlchemy engine
+    :param top_n: количество топовых товаров
+    :param sklads: список выбранных складов
+    :param groups: список выбранных групп (если sklads не указаны)
+    :param chunksize: размер чанка для pd.read_sql
+    :return: DataFrame с топ товарами
+    """
+    params = {}
+    where_clauses = []
+
+    if sklads:
+        where_clauses.append("склад = ANY(:sklads)")
+        params["sklads"] = sklads
+    elif groups:
+        where_clauses.append("группа = ANY(:groups)")
+        params["groups"] = groups
+
+    where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+    sql = f"""
+    SELECT дата, склад, артикул_товар, наименование, остаток
+    FROM alyans_data
+    {where_sql}
+    """
+
+    df_chunks = []
+
     try:
         for chunk in pd.read_sql(text(sql), engine, params=params, chunksize=chunksize):
-            if chunk.empty:
-                continue
-            chunk['остаток'] = pd.to_numeric(chunk['остаток'], errors='coerce').fillna(0)
-            chunk = chunk.sort_values(['склад', 'артикул_товар', 'дата'])
-            gb = chunk.groupby(['склад', 'артикул_товар'], sort=False)
-            
-            for (sklad, art), grp in gb:
-                arr = grp['остаток'].to_numpy(dtype=float)
-                if arr.size == 0:
-                    continue
-                key_name = grp['наименование'].iat[0] if 'наименование' in grp.columns else None
-                map_key = (art, key_name, sklad)
-                
-                prev = prev_last.get((sklad, art))
-                if prev is not None:
-                    d0 = prev - arr[0]
-                    if d0 > 0:
-                        prod_sums[map_key] += float(d0)
-                
-                if arr.size > 1:
-                    diffs = arr[:-1] - arr[1:]
-                    prod_sums[map_key] += float(np.sum(diffs[diffs > 0]))
-                
-                prev_last[(sklad, art)] = float(arr[-1])
-        
-        if not prod_sums:
-            return pd.DataFrame(columns=["артикул_товар", "наименование", "склад", "продано"])
-        
-        rows = [{"артикул_товар": art, "наименование": name, "склад": sklad, "продано": val}
-                for (art, name, sklad), val in prod_sums.items()]
-        df_res = pd.DataFrame(rows)
-        df_res = df_res.sort_values("продано", ascending=False).head(int(top_n)).reset_index(drop=True)
-        return df_res
-    
-    except Exception:
-        logging.exception("[get_top_products] Ошибка потоковой обработки")
-        return pd.DataFrame(columns=["артикул_товар", "наименование", "склад", "продано"])
+            # сортировка и подсчёт продано в Python
+            chunk = chunk.sort_values(["склад", "артикул_товар", "дата"])
+            chunk["prev_last"] = chunk.groupby(["склад", "артикул_товар"])["остаток"].shift(1)
+            chunk["продано"] = (chunk["prev_last"] - chunk["остаток"]).clip(lower=0)
+            df_chunks.append(chunk)
 
+    except Exception as e:
+        print(f"ERROR: [get_top_products] Ошибка потоковой обработки: {e}")
+        return pd.DataFrame()
+
+    if not df_chunks:
+        return pd.DataFrame()
+
+    # объединяем чанки
+    df_all = pd.concat(df_chunks, ignore_index=True)
+
+    # агрегируем по товару и складу
+    top_df = (
+        df_all.groupby(["артикул_товар", "наименование", "склад"], as_index=False)
+        ["продано"].sum()
+        .sort_values("продано", ascending=False)
+        .head(top_n)
+    )
+
+    return top_df
 
 def get_product_timeseries(article, sklads=None, month=None):
     """
@@ -802,16 +796,20 @@ def load_filters(active_tab):
     State("alyans-table", "selected_rows")
 )
 def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev_selected):
+    # Преобразуем top_n и фильтры
     top_n = int(top_n or 100)
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
-    df = get_top_products(top_n=top_n, sklads=sklads, groups=groups)
+    # Получаем топовые товары через потоковую функцию
+    df = get_top_products(engine=engine, top_n=top_n, sklads=sklads, groups=groups)
 
+    # Заголовок
     title = f"ТОП-{top_n} товаров по продажам (Альянс)"
     if df.empty:
         return [], [], title
 
+    # Переименуем колонки для таблицы Dash
     df = df.rename(columns={
         "артикул_товар": "Артикул",
         "наименование": "Наименование",
@@ -821,17 +819,19 @@ def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev
 
     records = df.to_dict("records")
 
-    # Сохраняем выбор пользователя
+    # Попытка сохранить выбор пользователя
+    selected_rows = []
     if prev_selected and prev_data:
         try:
-            old_row = prev_data[prev_selected[0]]
+            prev_row = prev_data[prev_selected[0]]
             for idx, row in enumerate(records):
-                if row["Артикул"] == old_row["Артикул"] and row["Наименование"] == old_row["Наименование"]:
-                    return records, [idx], title
+                if row["Артикул"] == prev_row["Артикул"] and row["Наименование"] == prev_row["Наименование"]:
+                    selected_rows = [idx]
+                    break
         except Exception:
             pass
 
-    return records, [], title
+    return records, selected_rows, title
 
 
 # -------------------- Колбэк для графика по выбранному товару --------------------
