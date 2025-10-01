@@ -10,5 +10,7 @@ polars
 gitpython
 xlrd
 PyGithub
+psycopg2-binary
+SQLAlchemy
 
 
