@@ -796,20 +796,27 @@ def load_filters(active_tab):
     State("alyans-table", "selected_rows")
 )
 def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev_selected):
-    # Преобразуем top_n и фильтры
     top_n = int(top_n or 100)
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
-    # Получаем топовые товары через потоковую функцию
-    df = get_top_products(engine=engine, top_n=top_n, sklads=sklads, groups=groups)
-
-    # Заголовок
     title = f"ТОП-{top_n} товаров по продажам (Альянс)"
+
+    # Безопасная обработка: если нет фильтра — возвращаем пустую таблицу
+    if not sklads and not groups:
+        return [], [], title
+
+    try:
+        # Получаем данные полностью, с фильтром по складам и группам
+        df = get_top_products(top_n=top_n, sklads=sklads, groups=groups)
+    except Exception as e:
+        print(f"[update_alyans_table] Ошибка получения данных: {e}")
+        return [], [], title
+
     if df.empty:
         return [], [], title
 
-    # Переименуем колонки для таблицы Dash
+    # Переименование колонок для DataTable
     df = df.rename(columns={
         "артикул_товар": "Артикул",
         "наименование": "Наименование",
@@ -837,59 +844,58 @@ def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev
 # -------------------- Колбэк для графика по выбранному товару --------------------
 @app.callback(
     Output("alyans-graph", "figure"),
-    Input("alyans-table", "selected_rows"),
-    State("alyans-table", "data"),
     Input("alyans-sklad", "value"),
+    Input("alyans-group", "value"),
 )
-def update_alyans_graph(selected_rows, table_data, selected_sklads):
+def update_alyans_graph(selected_sklads, selected_groups):
     sklads = _ensure_list(selected_sklads)
+    groups = _ensure_list(selected_groups)
 
-    if not selected_rows or not table_data:
-        return go.Figure(layout=go.Layout(
-            title="Выберите товар из таблицы ТОП для отображения графика",
-            xaxis_title="Дата",
-            yaxis_title="Остаток"
-        ))
-
-    row = table_data[selected_rows[0]]
-    article = row["Артикул"]
-
-    df_ts = get_product_timeseries(article, sklads=sklads)
-
-    if df_ts.empty:
-        return go.Figure(layout=go.Layout(
-            title="Нет данных для выбранного товара",
-            xaxis_title="Дата",
-            yaxis_title="Остаток"
-        ))
-
+    # Создаём пустую фигуру по умолчанию
     fig = go.Figure()
+    fig.update_layout(
+        title="Динамика остатков и продаж по выбранному товару",
+        xaxis_title="Дата",
+        yaxis_title="Количество",
+        template="plotly_white"
+    )
 
-    for sklad in df_ts["склад"].unique():
-        df_s = df_ts[df_ts["склад"] == sklad].sort_values("дата")
-        df_s["Продано"] = (df_s["остаток"].shift(1) - df_s["остаток"]).clip(lower=0).fillna(0)
+    # Без фильтра — возвращаем пустую фигуру
+    if not sklads and not groups:
+        return fig
 
-        fig.add_trace(go.Scatter(
-            x=df_s["дата"],
-            y=df_s["остаток"],
-            mode="lines+markers",
-            name=sklad,
-            text=[sklad]*len(df_s),
-            customdata=df_s[["Продано", "цена"]].values,
-            hovertemplate=(
-                "<b>Склад:</b> %{text}<br>"
-                "<b>Дата:</b> %{x|%d-%m-%Y}<br>"
-                "<b>Остаток:</b> %{y}<br>"
-                "<b>Продано:</b> %{customdata[0]}<br>"
-                "<b>Цена:</b> %{customdata[1]} ₽<extra></extra>"
-            )
-        ))
+    try:
+        # Получаем данные с фильтром по складам и группам
+        df = get_top_products(top_n=None, sklads=sklads, groups=groups)  # топ_n=None — все данные
+    except Exception as e:
+        print(f"[update_alyans_graph] Ошибка получения данных: {e}")
+        return fig
+
+    if df.empty:
+        return fig
+
+    # Суммируем по дате и создаём линии
+    df_grouped = df.groupby("дата").agg({"продано": "sum", "остаток": "sum"}).reset_index()
+
+    fig.add_trace(go.Scatter(
+        x=df_grouped["дата"],
+        y=df_grouped["остаток"],
+        mode="lines+markers",
+        name="Остаток",
+        line=dict(color="blue")
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df_grouped["дата"],
+        y=df_grouped["продано"],
+        mode="lines+markers",
+        name="Продано",
+        line=dict(color="green")
+    ))
 
     fig.update_layout(
-        title=f"Динамика остатков и продаж — {article} ({row['Наименование']})",
-        xaxis_title="Дата",
-        yaxis_title="Остаток",
-        hovermode="closest"
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=40, r=20, t=40, b=40)
     )
 
     return fig
