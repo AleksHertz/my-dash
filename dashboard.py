@@ -289,22 +289,6 @@ def get_product_timeseries(article, sklads=None, month=None):
         logging.exception("[get_product_timeseries] Ошибка выполнения запроса")
         return pd.DataFrame(columns=["дата", "склад", "артикул_товар", "наименование", "остаток", "цена"])
 
-@app.callback(
-    Output("alyans-filters", "children"),
-    Input("tabs", "active_tab")
-)
-def load_filters(active_tab):
-    if active_tab != "alyans":
-        return []  # пока пусто
-    
-    sklads = get_unique_sklads()
-    groups = get_unique_groups()
-
-    return [
-        dcc.Dropdown(id="alyans-sklad", options=[{"label": s, "value": s} for s in sklads], multi=True),
-        dcc.Dropdown(id="alyans-group", options=[{"label": g, "value": g} for g in groups], multi=True),
-    ]
-
 
 # --- Функции подготовки данных ---
 
@@ -976,6 +960,21 @@ app.layout = html.Div([
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+@app.callback(
+    Output("alyans-filters", "children"),
+    Input("tabs", "active_tab")
+)
+def load_filters(active_tab):
+    if active_tab != "alyans":
+        return []  # пока пусто
+    
+    sklads = get_unique_sklads()
+    groups = get_unique_groups()
+
+    return [
+        dcc.Dropdown(id="alyans-sklad", options=[{"label": s, "value": s} for s in sklads], multi=True),
+        dcc.Dropdown(id="alyans-group", options=[{"label": g, "value": g} for g in groups], multi=True),
+    ]
 
 @app.callback(
     Output("alyans-table", "data"),
