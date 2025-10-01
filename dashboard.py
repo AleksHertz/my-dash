@@ -784,13 +784,17 @@ def load_filters(active_tab):
     Output("alyans-table", "data"),
     Output("alyans-table", "selected_rows"),
     Output("alyans-top-title", "children"),
+    Input("tabs", "active_tab"),
     Input("alyans-sklad", "value"),
     Input("alyans-group", "value"),
     Input("alyans-top-size", "value"),
     State("alyans-table", "data"),
     State("alyans-table", "selected_rows")
 )
-def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev_selected):
+def update_alyans_table(active_tab, selected_sklads, selected_groups, top_n, prev_data, prev_selected):
+    if active_tab != "alyans":
+        return [], [], "ТОП товаров (Альянс)"
+
     top_n = int(top_n or 100)
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
@@ -799,10 +803,9 @@ def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev
         return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
 
     try:
-        # Получаем данные только по выбранным фильтрам
-        df_chunks = []
+        # Агрегируем продажи в SQL, берём только top_n
         sql = """
-            SELECT дата, склад, артикул_товар, наименование, остаток
+            SELECT склад, артикул_товар, наименование, SUM(остаток) AS продано
             FROM alyans_data
             WHERE 1=1
         """
@@ -814,29 +817,23 @@ def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev
             sql += " AND группа = ANY(:groups)"
             params["groups"] = groups
 
-        sql += " ORDER BY склад, артикул_товар, дата"
+        sql += " GROUP BY склад, артикул_товар, наименование"
+        sql += " ORDER BY продано DESC LIMIT :top_n"
+        params["top_n"] = top_n
 
-        # Чанки по 10000, чтобы не вываливался DiskFull
-        for chunk in pd.read_sql(text(sql), engine, params=params, chunksize=10000):
-            df_chunks.append(chunk)
+        df = pd.read_sql(text(sql), engine, params=params)
 
-        if not df_chunks:
+        if df.empty:
             return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
 
-        df = pd.concat(df_chunks, ignore_index=True)
-
-        # Считаем продажи
-        df['Продано'] = df.groupby(['склад', 'артикул_товар'])['остаток'].diff(-1).fillna(0).clip(lower=0)
-        df_top = df.groupby(['склад', 'артикул_товар', 'наименование'], as_index=False)['Продано'].sum()
-        df_top = df_top.sort_values('Продано', ascending=False).head(top_n)
-
-        df_top = df_top.rename(columns={
+        df = df.rename(columns={
             "артикул_товар": "Артикул",
             "наименование": "Наименование",
             "склад": "Склад",
+            "продано": "Продано"
         })
 
-        records = df_top.to_dict("records")
+        records = df.to_dict("records")
 
         # Сохраняем выбор пользователя
         if prev_selected and prev_data:
@@ -855,24 +852,24 @@ def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev
         return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
 
 
-# -------------------- Колбэк для графика по выбранному товару --------------------
+# -------------------- Колбэк для графика --------------------
 @app.callback(
     Output("alyans-graph", "figure"),
     Input("alyans-sklad", "value"),
     Input("alyans-group", "value"),
+    Input("alyans-top-size", "value")
 )
-def update_alyans_graph(selected_sklads, selected_groups):
+def update_alyans_graph(selected_sklads, selected_groups, top_n):
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
+    top_n = int(top_n or 100)
 
     if not sklads and not groups:
         return go.Figure()
 
     try:
-        # Берём топ-5000 для графика
-        df_chunks = []
         sql = """
-            SELECT дата, склад, артикул_товар, наименование, остаток
+            SELECT склад, артикул_товар, наименование, SUM(остаток) AS продано
             FROM alyans_data
             WHERE 1=1
         """
@@ -884,24 +881,27 @@ def update_alyans_graph(selected_sklads, selected_groups):
             sql += " AND группа = ANY(:groups)"
             params["groups"] = groups
 
-        sql += " ORDER BY склад, артикул_товар, дата"
+        sql += " GROUP BY склад, артикул_товар, наименование"
+        sql += " ORDER BY продано DESC LIMIT :top_n"
+        params["top_n"] = top_n
 
-        for chunk in pd.read_sql(text(sql), engine, params=params, chunksize=10000):
-            df_chunks.append(chunk)
+        df = pd.read_sql(text(sql), engine, params=params)
 
-        if not df_chunks:
+        if df.empty:
             return go.Figure()
 
-        df = pd.concat(df_chunks, ignore_index=True)
-        df['Продано'] = df.groupby(['склад', 'артикул_товар'])['остаток'].diff(-1).fillna(0).clip(lower=0)
-        df_top = df.groupby(['склад', 'артикул_товар', 'наименование'], as_index=False)['Продано'].sum()
-        df_top = df_top.sort_values('Продано', ascending=False).head(5000)
+        df = df.rename(columns={
+            "артикул_товар": "Артикул",
+            "наименование": "Наименование",
+            "склад": "Склад",
+            "продано": "Продано"
+        })
 
         fig = go.Figure()
-        for sklad in df_top['склад'].unique():
-            df_s = df_top[df_top['склад'] == sklad]
+        for sklad in df['Склад'].unique():
+            df_s = df[df['Склад'] == sklad]
             fig.add_trace(go.Bar(
-                x=df_s['наименование'],
+                x=df_s['Наименование'],
                 y=df_s['Продано'],
                 name=f"Склад {sklad}"
             ))
@@ -915,12 +915,12 @@ def update_alyans_graph(selected_sklads, selected_groups):
             template='plotly_white',
             height=500
         )
+
         return fig
 
     except Exception as e:
         print(f"[update_alyans_graph] Ошибка получения данных: {e}")
         return go.Figure()
-
 
 # --- Утилиты ---
 def _to_list(x):
