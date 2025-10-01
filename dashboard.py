@@ -762,41 +762,42 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # -------------------- Колбэк для фильтров --------------------
+# Заглушка при заходе (ничего не грузим из базы)
 @app.callback(
     Output("alyans-filters", "children"),
     Input("tabs", "active_tab")
 )
 def load_filters(active_tab):
     if active_tab != "alyans":
-        return []  # пока пусто
-    
+        return []
+
     sklads = _ensure_list(get_unique_sklads())
     groups = _ensure_list(get_unique_groups())
 
     return [
+        html.Label("Склад"),
         dcc.Dropdown(id="alyans-sklad", options=[{"label": s, "value": s} for s in sklads], multi=True),
+        html.Label("Группа"),
         dcc.Dropdown(id="alyans-group", options=[{"label": g, "value": g} for g in groups], multi=True),
+        html.Label("ТОП товаров"),
+        dcc.Input(id="alyans-top-size", type="number", value=50, min=10, max=100)
     ]
 
 
-# -------------------- Колбэк для таблицы ТОП --------------------
-# -------------------- Колбэк для таблицы ТОП --------------------
+# -------------------- Таблица ТОП --------------------
 @app.callback(
     Output("alyans-table", "data"),
     Output("alyans-table", "selected_rows"),
     Output("alyans-top-title", "children"),
-    Input("tabs", "active_tab"),
     Input("alyans-sklad", "value"),
     Input("alyans-group", "value"),
     Input("alyans-top-size", "value"),
-    State("alyans-table", "data"),
-    State("alyans-table", "selected_rows")
 )
-def update_alyans_table(active_tab, selected_sklads, selected_groups, top_n, prev_data, prev_selected):
-    if active_tab != "alyans":
-        return [], [], "ТОП товаров (Альянс)"
+def update_alyans_table(selected_sklads, selected_groups, top_n):
+    if not selected_sklads and not selected_groups:
+        return [], [], "Выберите склад или группу"
 
-    top_n = int(top_n or 100)
+    top_n = int(top_n or 50)
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
@@ -821,7 +822,7 @@ def update_alyans_table(active_tab, selected_sklads, selected_groups, top_n, pre
         df = pd.read_sql(text(sql), engine, params=params)
 
         if df.empty:
-            return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
+            return [], [], f"ТОП-{top_n} товаров (Альянс)"
 
         df = df.rename(columns={
             "артикул_товар": "Артикул",
@@ -830,26 +831,14 @@ def update_alyans_table(active_tab, selected_sklads, selected_groups, top_n, pre
             "продано": "Продано"
         })
 
-        records = df.to_dict("records")
-
-        # Восстанавливаем выбранную строку
-        if prev_selected and prev_data:
-            try:
-                old_row = prev_data[prev_selected[0]]
-                for idx, row in enumerate(records):
-                    if row["Артикул"] == old_row["Артикул"] and row["Наименование"] == old_row["Наименование"]:
-                        return records, [idx], f"ТОП-{top_n} товаров по продажам (Альянс)"
-            except Exception:
-                pass
-
-        return records, [], f"ТОП-{top_n} товаров по продажам (Альянс)"
+        return df.to_dict("records"), [], f"ТОП-{top_n} товаров (Альянс)"
 
     except Exception as e:
-        print(f"[update_alyans_table] Ошибка получения данных: {e}")
-        return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
+        print(f"[update_alyans_table] Ошибка: {e}")
+        return [], [], f"ТОП-{top_n} товаров (Альянс)"
 
 
-# -------------------- Колбэк для графика по выбранному товару --------------------
+# -------------------- График по выбранному товару --------------------
 @app.callback(
     Output("alyans-graph", "figure"),
     Input("alyans-table", "data"),
@@ -865,10 +854,10 @@ def update_alyans_graph(table_data, selected_rows):
         artikul = selected["Артикул"]
 
         sql = """
-            SELECT дата, склад, артикул_товар, наименование, SUM(остаток) AS продано
+            SELECT дата, SUM(остаток) AS продано
             FROM alyans_data
             WHERE склад = :sklad AND артикул_товар = :artikul
-            GROUP BY дата, склад, артикул_товар, наименование
+            GROUP BY дата
             ORDER BY дата
         """
         params = {"sklad": sklad, "artikul": artikul}
@@ -882,9 +871,8 @@ def update_alyans_graph(table_data, selected_rows):
             x=df["дата"],
             y=df["продано"],
             mode="lines+markers",
-            name=f"{artikul} ({sklad})",
-            text=df["наименование"],
-            hovertemplate="Дата: %{x}<br>Продано: %{y}<br>%{text}"
+            name=artikul,
+            hovertemplate="Дата: %{x}<br>Продано: %{y}"
         ))
 
         fig.update_layout(
@@ -894,11 +882,10 @@ def update_alyans_graph(table_data, selected_rows):
             template="plotly_white",
             height=500
         )
-
         return fig
 
     except Exception as e:
-        print(f"[update_alyans_graph] Ошибка построения графика: {e}")
+        print(f"[update_alyans_graph] Ошибка: {e}")
         return go.Figure()
 
 # --- Утилиты ---
