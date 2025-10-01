@@ -289,16 +289,21 @@ def get_product_timeseries(article, sklads=None, month=None):
         logging.exception("[get_product_timeseries] Ошибка выполнения запроса")
         return pd.DataFrame(columns=["дата", "склад", "артикул_товар", "наименование", "остаток", "цена"])
 
+@app.callback(
+    Output("alyans-filters", "children"),
+    Input("tabs", "active_tab")
+)
+def load_filters(active_tab):
+    if active_tab != "alyans":
+        return []  # пока пусто
+    
+    sklads = get_unique_sklads()
+    groups = get_unique_groups()
 
-# === Инициализация уникальных значений для выпадающих списков (выполняется быстро) ===
-try:
-    unique_sklads_alyans = get_unique_sklads()
-    unique_groups_alyans = get_unique_groups()
-    logging.info("[DB] Уникальные значения для Альянса получены.")
-except Exception:
-    unique_sklads_alyans = []
-    unique_groups_alyans = []
-    logging.exception("[DB] Ошибка при инициализации списков фильтров.")
+    return [
+        dcc.Dropdown(id="alyans-sklad", options=[{"label": s, "value": s} for s in sklads], multi=True),
+        dcc.Dropdown(id="alyans-group", options=[{"label": g, "value": g} for g in groups], multi=True),
+    ]
 
 
 # --- Функции подготовки данных ---
@@ -854,19 +859,35 @@ app.layout = html.Div([
             html.Div([
                 html.H2("Анализ данных Альянс"),
 
-                # Фильтры
+                # --- Фильтры ---
                 html.Div([
                     html.Label("Склад:"),
-                    dcc.Dropdown(id="alyans-sklad-filter", multi=True, placeholder="Выберите склад"),
+                    dcc.Dropdown(
+                        id="alyans-sklad-filter",
+                        multi=True,
+                        placeholder="Выберите склад"
+                    ),
 
                     html.Label("Группа:"),
-                    dcc.Dropdown(id="alyans-group-filter", multi=True, placeholder="Выберите группу"),
+                    dcc.Dropdown(
+                        id="alyans-group-filter",
+                        multi=True,
+                        placeholder="Выберите группу"
+                    ),
 
                     html.Label("Артикул:"),
-                    dcc.Dropdown(id="alyans-article-filter", multi=False, placeholder="Выберите артикул"),
+                    dcc.Dropdown(
+                        id="alyans-article-filter",
+                        multi=False,
+                        placeholder="Выберите артикул"
+                    ),
 
                     html.Label("Номенклатура:"),
-                    dcc.Dropdown(id="alyans-nom-filter", multi=False, placeholder="Выберите номенклатуру"),
+                    dcc.Dropdown(
+                        id="alyans-nom-filter",
+                        multi=False,
+                        placeholder="Выберите номенклатуру"
+                    ),
 
                     html.Label("Диапазон дат:"),
                     dcc.DatePickerRange(
@@ -877,11 +898,15 @@ app.layout = html.Div([
                     ),
                 ], style={'maxWidth': 500, 'marginBottom': 30}),
 
-                # График
+                # --- График ---
                 html.H3("Динамика продаж, пополнений и цены"),
-                dcc.Graph(id="alyans-line-graph"),
+                dcc.Loading(
+                    id="loading-alyans-graph",
+                    type="circle",
+                    children=dcc.Graph(id="alyans-line-graph")
+                ),
 
-                # Таблица ТОП
+                # --- Таблица ТОП ---
                 html.Div([
                     html.Label("Размер ТОПа:"),
                     dcc.RadioItems(
@@ -898,36 +923,40 @@ app.layout = html.Div([
 
                 html.H3(id="alyans-top-title", style={"marginTop": "20px"}),
 
-                dash_table.DataTable(
-                    id="alyans-top-table",
-                    columns=[
-                        {"name": "Артикул", "id": "Артикул"},
-                        {"name": "Номенклатура", "id": "Номенклатура"},
-                        {"name": "Продано", "id": "Продано"},
-                        {"name": "Пополнено", "id": "Пополнено"},
-                        {"name": "Склад", "id": "Склад"},
-                    ],
-                    style_table={
-                        "overflowX": "auto",
-                        "maxHeight": "500px",
-                        "overflowY": "scroll",
-                        "width": "100%",
-                    },
-                    style_cell={
-                        "textAlign": "left",
-                        "padding": "5px",
-                        "whiteSpace": "normal",
-                        "height": "auto",
-                    },
-                    style_header={
-                        "fontWeight": "bold",
-                        "backgroundColor": "#f0f0f0",
-                    },
-                    page_size=20,
-                    row_selectable="single",
+                dcc.Loading(
+                    id="loading-alyans-table",
+                    type="circle",
+                    children=dash_table.DataTable(
+                        id="alyans-top-table",
+                        columns=[
+                            {"name": "Артикул", "id": "Артикул"},
+                            {"name": "Номенклатура", "id": "Номенклатура"},
+                            {"name": "Продано", "id": "Продано"},
+                            {"name": "Пополнено", "id": "Пополнено"},
+                            {"name": "Склад", "id": "Склад"},
+                        ],
+                        style_table={
+                            "overflowX": "auto",
+                            "maxHeight": "500px",
+                            "overflowY": "scroll",
+                            "width": "100%",
+                        },
+                        style_cell={
+                            "textAlign": "left",
+                            "padding": "5px",
+                            "whiteSpace": "normal",
+                            "height": "auto",
+                        },
+                        style_header={
+                            "fontWeight": "bold",
+                            "backgroundColor": "#f0f0f0",
+                        },
+                        page_size=20,
+                        row_selectable="single",
+                    )
                 ),
 
-                # Кнопка выгрузки
+                # --- Кнопка выгрузки ---
                 html.Div([
                     dbc.Button(
                         "📥 Выгрузить в Excel (с учётом фильтров)",
@@ -948,40 +977,37 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# --- Таблица ТОП-N (замена вашего update_alyans_table) ---
 @app.callback(
-    Output("alyans-top-table", "data"),
-    Output("alyans-top-table", "selected_rows"),
+    Output("alyans-table", "data"),
+    Output("alyans-table", "selected_rows"),
     Output("alyans-top-title", "children"),
-    Input("alyans-sklad-filter", "value"),
-    Input("alyans-group-filter", "value"),
+    Input("alyans-sklad", "value"),
+    Input("alyans-group", "value"),
     Input("alyans-top-size", "value"),
-    State("alyans-top-table", "data"),
-    State("alyans-top-table", "selected_rows"),
+    State("alyans-table", "data"),
+    State("alyans-table", "selected_rows")
 )
 def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev_selected):
-    # Получаем ТОП из БД
-    df_top = get_top_products(top_n=top_n or 100, sklads=selected_sklads, groups=selected_groups)
+    df = get_top_products(top_n=top_n, sklads=selected_sklads, groups=selected_groups)
 
-    if df_top.empty:
+    if df.empty:
         return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
 
-    # Переименовываем поля в человеческие для таблицы
-    df_top = df_top.rename(columns={
+    df = df.rename(columns={
         "артикул_товар": "Артикул",
         "наименование": "Наименование",
-        "продано": "Продано",
-        "склад": "Склад"
+        "склад": "Склад",
+        "продано": "Продано"
     })
 
-    records = df_top.to_dict("records")
+    records = df.to_dict("records")
 
-    # Попытка сохранить предыдущий selection (по Артикулу+Наим)
+    # Сохраняем выбор
     if prev_selected and prev_data:
         try:
             old_row = prev_data[prev_selected[0]]
             for idx, row in enumerate(records):
-                if row.get("Артикул") == old_row.get("Артикул") and row.get("Наименование") == old_row.get("Наименование"):
+                if row["Артикул"] == old_row["Артикул"] and row["Наименование"] == old_row["Наименование"]:
                     return records, [idx], f"ТОП-{top_n} товаров по продажам (Альянс)"
         except Exception:
             pass
@@ -992,13 +1018,11 @@ def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev
 # --- График по выбранному товару (замена update_alyans_graph) ---
 @app.callback(
     Output("alyans-graph", "figure"),
-    Input("alyans-top-table", "selected_rows"),
-    State("alyans-top-table", "data"),
-    Input("alyans-sklad-filter", "value"),
-    Input("alyans-month-filter", "value"),  # если у вас есть фильтр по месяцу
+    Input("alyans-table", "selected_rows"),
+    State("alyans-table", "data"),
+    Input("alyans-sklad", "value"),
 )
-def update_alyans_graph(selected_rows, table_data, selected_sklads, selected_month):
-    # пустой график если ничего не выбрано
+def update_alyans_graph(selected_rows, table_data, selected_sklads):
     if not selected_rows or not table_data:
         return go.Figure(layout=go.Layout(
             title="Выберите товар из таблицы ТОП для отображения графика",
@@ -1006,43 +1030,37 @@ def update_alyans_graph(selected_rows, table_data, selected_sklads, selected_mon
         ))
 
     row = table_data[selected_rows[0]]
-    article = row.get("Артикул")
-    name = row.get("Наименование")
+    article = row["Артикул"]
 
-    # Получаем таймсерию из БД
-    dff = get_product_timeseries(article, sklads=selected_sklads, month=selected_month)
+    df_ts = get_product_timeseries(article, sklads=selected_sklads)
 
-    if dff.empty:
+    if df_ts.empty:
         return go.Figure(layout=go.Layout(
-            title=f"Нет данных для {article}",
+            title="Нет данных для выбранного товара",
             xaxis_title="Дата", yaxis_title="Остаток"
         ))
 
     fig = go.Figure()
-    for sklad in sorted(dff["склад"].unique()):
-        df_s = dff[dff["склад"] == sklad].sort_values("дата").copy()
-        df_s["продано_fix"] = (df_s["остаток"].shift(1) - df_s["остаток"]).clip(lower=0).fillna(0)
-        df_s["пополнено_fix"] = (df_s["остаток"] - df_s["остаток"].shift(1)).clip(lower=0).fillna(0)
+    for sklad in df_ts["склад"].unique():
+        df_s = df_ts[df_ts["склад"] == sklad].sort_values("дата")
+        df_s["Продано"] = (df_s["остаток"].shift(1) - df_s["остаток"]).clip(lower=0).fillna(0)
 
         fig.add_trace(go.Scatter(
-            x=df_s["дата"],
-            y=df_s["остаток"],
-            mode="lines+markers",
-            name=str(sklad),
-            text=[sklad] * len(df_s),
-            customdata=df_s[["продано_fix", "пополнено_fix", "цена"]].values,
+            x=df_s["дата"], y=df_s["остаток"],
+            mode="lines+markers", name=sklad,
+            text=[sklad]*len(df_s),
+            customdata=df_s[["Продано", "цена"]].values,
             hovertemplate=(
                 "<b>Склад:</b> %{text}<br>"
                 "<b>Дата:</b> %{x|%d-%m-%Y}<br>"
                 "<b>Остаток:</b> %{y}<br>"
                 "<b>Продано:</b> %{customdata[0]}<br>"
-                "<b>Пополнено:</b> %{customdata[1]}<br>"
-                "<b>Цена:</b> %{customdata[2]} ₽<extra></extra>"
+                "<b>Цена:</b> %{customdata[1]} ₽<extra></extra>"
             )
         ))
 
     fig.update_layout(
-        title=f"Динамика остатков и продаж — {article} ({name})",
+        title=f"Динамика остатков и продаж — {article} ({row['Наименование']})",
         xaxis_title="Дата", yaxis_title="Остаток",
         hovermode="closest"
     )
