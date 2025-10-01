@@ -785,6 +785,7 @@ def load_filters(active_tab):
 
 
 # -------------------- Таблица ТОП --------------------
+# -------------------- Таблица ТОП --------------------
 @app.callback(
     Output("alyans-table", "data"),
     Output("alyans-table", "selected_rows"),
@@ -794,104 +795,170 @@ def load_filters(active_tab):
     Input("alyans-top-size", "value"),
 )
 def update_alyans_table(selected_sklads, selected_groups, top_n):
-    if not selected_sklads and not selected_groups:
-        return [], [], "Выберите склад или группу"
+    logger = logging.getLogger("update_alyans_table")
+    try:
+        top_n = int(top_n or 50)
+    except Exception:
+        top_n = 50
 
-    top_n = int(top_n or 50)
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
+    # Защита: требуем хотя бы один фильтр (склад или группа) — чтобы не грузить БД целиком
+    if not sklads and not groups:
+        title = "Выберите склад или группу (чтобы показать ТОП)"
+        return [], [], title
+
+    # Если выбран только склад (без группы), ограничим период — чтобы не перегружать БД
+    date_limit_clause = ""
+    params = {"top_n": top_n}
+    if sklads and not groups:
+        start_date = (datetime.utcnow().date() - timedelta(days=180)).isoformat()
+        date_limit_clause = " AND дата >= :start_date"
+        params["start_date"] = start_date
+
+    if sklads:
+        params["sklads"] = sklads
+    if groups:
+        params["groups"] = groups
+
+    # CTE с LAG — считаем положительные diffs как продажи
+    where_parts = ["1=1"]
+    if sklads:
+        where_parts.append("склад = ANY(:sklads)")
+    if groups:
+        where_parts.append("группа = ANY(:groups)")
+    if date_limit_clause:
+        where_parts.append("дата >= :start_date")
+    where_clause = " AND ".join(where_parts)
+
+    window_sql = f"""
+    WITH diffs AS (
+        SELECT
+            дата,
+            склад,
+            артикул_товар,
+            наименование,
+            (LAG(остаток) OVER (PARTITION BY склад, артикул_товар ORDER BY дата) - остаток) AS delta
+        FROM alyans_data
+        WHERE {where_clause}
+    )
+    SELECT артикул_товар, наименование, склад, SUM(GREATEST(delta, 0)) AS продано
+    FROM diffs
+    GROUP BY артикул_товар, наименование, склад
+    ORDER BY продано DESC
+    LIMIT :top_n;
+    """
+
     try:
-        sql = """
-            SELECT склад, артикул_товар, наименование,
-                   SUM("Всего_продано") AS продано
-            FROM alyans_data
-            WHERE 1=1
-        """
-        params = {}
-        if sklads:
-            sql += " AND склад = ANY(:sklads)"
-            params["sklads"] = sklads
-        if groups:
-            sql += " AND группа = ANY(:groups)"
-            params["groups"] = groups
-
-        sql += " GROUP BY склад, артикул_товар, наименование"
-        sql += " ORDER BY продано DESC LIMIT :top_n"
-        params["top_n"] = top_n
-
-        df = pd.read_sql(text(sql), engine, params=params)
-
-        if df.empty:
-            return [], [], f"ТОП-{top_n} товаров (Альянс)"
-
-        df = df.rename(columns={
-            "артикул_товар": "Артикул",
-            "наименование": "Наименование",
-            "склад": "Склад",
-            "продано": "Продано"
-        })
-
-        return df.to_dict("records"), [], f"ТОП-{top_n} товаров (Альянс)"
-
+        with engine.connect() as conn:
+            df = pd.read_sql(text(window_sql), conn, params=params)
     except Exception as e:
-        print(f"[update_alyans_table] Ошибка: {e}")
-        return [], [], f"ТОП-{top_n} товаров (Альянс)"
+        logger.exception("[update_alyans_table] Ошибка оконного запроса, возвращаю пустую таблицу. Причина:")
+        # Не пытаемся делать тяжёлый fallback — для демонстрации вернём понятный результат
+        title = f"ТОП-{top_n} товаров (Альянс) — ошибка запроса (см. логи)"
+        return [], [], title
+
+    if df is None or df.empty:
+        title = f"ТОП-{top_n} товаров (Альянс) — нет данных"
+        return [], [], title
+
+    # Переименуем колонки для DataTable
+    df = df.rename(columns={
+        "артикул_товар": "Артикул",
+        "наименование": "Наименование",
+        "склад": "Склад",
+        "продано": "Продано"
+    })
+
+    records = df.to_dict("records")
+    title = f"ТОП-{top_n} товаров по продажам (Альянс)"
+    # Сброс выделения — проще и надёжнее
+    return records, [], title
 
 
 # -------------------- График по выбранному товару --------------------
 @app.callback(
     Output("alyans-graph", "figure"),
     Input("alyans-table", "data"),
-    Input("alyans-table", "selected_rows")
+    Input("alyans-table", "selected_rows"),
 )
 def update_alyans_graph(table_data, selected_rows):
+    logger = logging.getLogger("update_alyans_graph")
     if not table_data or not selected_rows:
-        return go.Figure()
+        return go.Figure(layout=go.Layout(
+            title="Выберите товар в таблице ТОП"
+        ))
 
     try:
-        selected = table_data[selected_rows[0]]
-        sklad = selected["Склад"]
-        artikul = selected["Артикул"]
+        sel = table_data[selected_rows[0]]
+        sklad = sel.get("Склад")
+        artikul = sel.get("Артикул")
+        name = sel.get("Наименование", "")
 
+        if not sklad or not artikul:
+            return go.Figure(layout=go.Layout(title="Неверный выбор строки"))
+
+        # Берём все строки по артикулу+складу — обычно это небольшая выборка
         sql = """
-            SELECT дата,
-                   SUM("Всего_продано") AS продано,
-                   AVG("Цена_в_начале_дня") AS цена,
-                   AVG(остаток) AS остаток
+            SELECT дата, остаток, цена
             FROM alyans_data
             WHERE склад = :sklad AND артикул_товар = :artikul
-            GROUP BY дата
-            ORDER BY дата
+            ORDER BY дата ASC;
         """
         params = {"sklad": sklad, "artikul": artikul}
-        df = pd.read_sql(text(sql), engine, params=params)
+        with engine.connect() as conn:
+            df = pd.read_sql(text(sql), conn, params=params)
 
-        if df.empty:
-            return go.Figure()
+        if df is None or df.empty:
+            return go.Figure(layout=go.Layout(title="Нет данных по выбранному товару"))
 
+        # Приведения и расчёты в pandas — быстро (несколько десятков/сотен строк)
+        df["дата"] = pd.to_datetime(df["дата"])
+        df["остаток"] = pd.to_numeric(df["остаток"], errors="coerce").fillna(0)
+        # исправляем цену — удаляем $ если есть и преобразуем
+        if "цена" in df.columns:
+            df["цена"] = pd.to_numeric(df["цена"].astype(str).replace(r"[\$,]", "", regex=True), errors="coerce").fillna(0)
+        else:
+            df["цена"] = 0
+
+        df = df.sort_values("дата").reset_index(drop=True)
+        df["Продано"] = (df["остаток"].shift(1) - df["остаток"]).clip(lower=0).fillna(0)
+        df["Пополнено"] = (df["остаток"] - df["остаток"].shift(1)).clip(lower=0).fillna(0)
+
+        # Строим линейный граф по остаткам; точки размечаем по Продано/Пополнено на hover
         fig = go.Figure()
+
         fig.add_trace(go.Scatter(
             x=df["дата"],
-            y=df["продано"],
+            y=df["остаток"],
             mode="lines+markers",
-            name="Продано",
-            hovertemplate="Дата: %{x}<br>Продано: %{y}<br>Цена: %{customdata[0]}<br>Остаток: %{customdata[1]}",
-            customdata=df[["цена", "остаток"]].values
+            name=f"Остаток ({sklad})",
+            marker=dict(size=6),
+            customdata=df[["Продано", "Пополнено", "цена"]].values,
+            hovertemplate=(
+                "<b>Дата:</b> %{x|%d-%m-%Y}<br>"
+                "<b>Остаток:</b> %{y}<br>"
+                "<b>Продано:</b> %{customdata[0]}<br>"
+                "<b>Пополнено:</b> %{customdata[1]}<br>"
+                "<b>Цена:</b> %{customdata[2]} ₽<extra></extra>"
+            )
         ))
 
         fig.update_layout(
-            title=f"Динамика продаж: {artikul} ({sklad})",
+            title=f"Динамика остатков и продаж — {artikul} {('('+name+')') if name else ''}",
             xaxis_title="Дата",
-            yaxis_title="Продано",
+            yaxis_title="Остаток",
+            hovermode="closest",
             template="plotly_white",
-            height=500
+            height=520
         )
         return fig
 
     except Exception as e:
-        print(f"[update_alyans_graph] Ошибка: {e}")
-        return go.Figure()
+        logger.exception("[update_alyans_graph] Ошибка получения данных")
+        return go.Figure(layout=go.Layout(title="Ошибка при получении данных (см. логи)"))
+
 
 # --- Утилиты ---
 def _to_list(x):
