@@ -31,6 +31,8 @@ from datetime import datetime
 import subprocess
 import psycopg2
 from sqlalchemy import create_engine, text
+from collections import defaultdict
+from sqlalchemy.exc import OperationalError
 # --------------------
 # НАСТРОЙКИ
 # --------------------
@@ -114,29 +116,28 @@ def get_unique_groups():
         logging.exception("[get_unique_groups] Ошибка чтения групп")
         return []
 
-def get_top_products(top_n=100, sklads=None, groups=None):
+def get_top_products(top_n=100, sklads=None, groups=None, chunksize=200_000):
     """
-    Вернуть DataFrame с колонками:
+    Возвращает DataFrame с колонками:
     артикул_товар, наименование, склад, продано (сумма положительных diffs)
-    Параметры sklads и groups принимают list (или одно значение).
+    Сначала пытается выполнить оконный SQL (быстрее), при ошибке - fallback через потоковую обработку чанками.
     """
-    sklads = _ensure_list(sklads)
-    groups = _ensure_list(groups)
+    sklads = sklads if (sklads is None or isinstance(sklads, (list, tuple))) else [sklads]
+    groups = groups if (groups is None or isinstance(groups, (list, tuple))) else [groups]
 
+    # --- Построение WHERE и params ---
     filters = []
     params = {"top_n": int(top_n)}
-
     if sklads:
         filters.append("склад = ANY(:sklads)")
         params["sklads"] = sklads
     if groups:
         filters.append("группа = ANY(:groups)")
         params["groups"] = groups
-
     where_clause = "WHERE " + " AND ".join(filters) if filters else ""
 
-    # Вычисляем diff через LAG и суммируем положительные разницы как "продано"
-    query_text = f"""
+    # --- Первый (предпочтительный) вариант: оконный SQL с LAG ---
+    window_sql = f"""
     WITH diffs AS (
         SELECT
             дата,
@@ -155,15 +156,86 @@ def get_top_products(top_n=100, sklads=None, groups=None):
     """
 
     try:
-        q = text(query_text)
+        q = text(window_sql)
         with engine.connect() as conn:
             df = pd.read_sql(q, conn, params=params)
-        # защитим от None
         if df is None or df.empty:
             return pd.DataFrame(columns=["артикул_товар", "наименование", "склад", "продано"])
         return df
+    except OperationalError as e:
+        logging.exception("[get_top_products] Ошибка выполнения оконного запроса, переключаюсь на потоковый режим. Причина:")
+        # fallthrough to streaming fallback
     except Exception as e:
-        logging.exception("[get_top_products] Ошибка выполнения запроса")
+        logging.exception("[get_top_products] Неожиданная ошибка оконного запроса, переключаюсь на потоковый режим.")
+        # fallthrough
+
+    # --- Fallback: потоковая обработка чанками ---
+    # ВАЖНО: для эффективности лучше иметь индекс (склад, артикул_товар, дата) в БД.
+    # Запрос отдаёт минимальный набор полей, отсортированных по (склад, артикул_товар, дата).
+    # Если сортировка всё равно делается в БД (без индекса) — она может вызвать тот же DiskFull.
+    logging.info("[get_top_products] Работа в fallback режиме (чанки).")
+
+    cols_sql = "дата, склад, артикул_товар, наименование, остаток"
+    sql = f"""
+    SELECT {cols_sql}
+    FROM alyans_data
+    {where_clause}
+    ORDER BY склад, артикул_товар, дата
+    """
+
+    prod_sums = defaultdict(float)   # ключ: (артикул, наименование, склад) -> сумма продано
+    prev_last = {}  # ключ: (склад, артикул) -> последний остаток (float)
+
+    try:
+        # Читаем чанками
+        for chunk in pd.read_sql(text(sql), engine, params=params, chunksize=chunksize):
+            # Быстрая очистка типов
+            if chunk.empty:
+                continue
+            # Удобство: убедимся в нужных типах
+            chunk['остаток'] = pd.to_numeric(chunk['остаток'], errors='coerce').fillna(0).astype(float)
+            # Гарантируем сортировку в чанке (чтобы быть уверенным в порядке внутри чанка)
+            chunk = chunk.sort_values(['склад', 'артикул_товар', 'дата'])
+
+            # Проходим по группам (склад, артикул_товар)
+            gb = chunk.groupby(['склад', 'артикул_товар'], sort=False)
+            for (sklad, art), grp in gb:
+                arr = grp['остаток'].to_numpy(dtype=float)
+                if arr.size == 0:
+                    continue
+                key_name = grp['наименование'].iat[0] if 'наименование' in grp.columns else None
+                map_key = (art, key_name, sklad)
+
+                prev = prev_last.get((sklad, art), None)
+                # учитываем переход из прошлой чанки
+                if prev is not None:
+                    d0 = prev - arr[0]
+                    if d0 > 0:
+                        prod_sums[map_key] += float(d0)
+
+                # вычисляем внутренние diffs в чанке
+                if arr.size > 1:
+                    diffs = arr[:-1] - arr[1:]
+                    pos = float(np.sum(diffs[diffs > 0]))
+                    prod_sums[map_key] += pos
+
+                # запомним последний остаток для следующей чанки
+                prev_last[(sklad, art)] = float(arr[-1])
+
+        # Сформируем DataFrame результата
+        if not prod_sums:
+            return pd.DataFrame(columns=["артикул_товар", "наименование", "склад", "продано"])
+
+        rows = []
+        for (art, name, sklad), val in prod_sums.items():
+            rows.append({"артикул_товар": art, "наименование": name, "склад": sklad, "продано": val})
+        df_res = pd.DataFrame(rows)
+        df_res = df_res.sort_values("продано", ascending=False).head(int(top_n)).reset_index(drop=True)
+        return df_res
+
+    except Exception as e:
+        logging.exception("[get_top_products] Ошибка в потоковом режиме")
+        # В крайнем случае возвращаем пустой DF
         return pd.DataFrame(columns=["артикул_товар", "наименование", "склад", "продано"])
 
 
