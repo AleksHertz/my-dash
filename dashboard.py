@@ -81,18 +81,20 @@ unique_peak_articles = sorted(df_peaks['Артикул'].dropna().unique()) if n
 unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()) if not df_peaks.empty else []
 
 # URL из Railway
+# URL из Railway
 DB_URL = "postgresql://postgres:SyngvjjliGqUBYDKibMmoOWCVUZVdFjc@tramway.proxy.rlwy.net:13502/railway"
 
 # Создаём движок (параметры пула можно настроить)
 engine = create_engine(DB_URL, pool_pre_ping=True)
+
 
 def _ensure_list(v):
     if v is None:
         return None
     if isinstance(v, (list, tuple)):
         return list(v)
-    # single value (string) -> list
     return [v]
+
 
 def get_unique_sklads():
     """Вернуть список уникальных складов (для options)."""
@@ -101,9 +103,10 @@ def get_unique_sklads():
         with engine.connect() as conn:
             rows = conn.execute(q).fetchall()
         return [r[0] for r in rows]
-    except Exception as e:
+    except Exception:
         logging.exception("[get_unique_sklads] Ошибка чтения складов")
         return []
+
 
 def get_unique_groups():
     """Вернуть список уникальных групп (для options)."""
@@ -112,9 +115,10 @@ def get_unique_groups():
         with engine.connect() as conn:
             rows = conn.execute(q).fetchall()
         return [r[0] for r in rows]
-    except Exception as e:
+    except Exception:
         logging.exception("[get_unique_groups] Ошибка чтения групп")
         return []
+
 
 def get_top_products(top_n=100, sklads=None, groups=None, chunksize=200_000):
     """
@@ -162,17 +166,12 @@ def get_top_products(top_n=100, sklads=None, groups=None, chunksize=200_000):
         if df is None or df.empty:
             return pd.DataFrame(columns=["артикул_товар", "наименование", "склад", "продано"])
         return df
-    except OperationalError as e:
-        logging.exception("[get_top_products] Ошибка выполнения оконного запроса, переключаюсь на потоковый режим. Причина:")
-        # fallthrough to streaming fallback
-    except Exception as e:
-        logging.exception("[get_top_products] Неожиданная ошибка оконного запроса, переключаюсь на потоковый режим.")
-        # fallthrough
+    except OperationalError:
+        logging.exception("[get_top_products] Ошибка выполнения оконного запроса, fallback к потоковой обработке")
+    except Exception:
+        logging.exception("[get_top_products] Неожиданная ошибка оконного запроса, fallback к потоковой обработке")
 
     # --- Fallback: потоковая обработка чанками ---
-    # ВАЖНО: для эффективности лучше иметь индекс (склад, артикул_товар, дата) в БД.
-    # Запрос отдаёт минимальный набор полей, отсортированных по (склад, артикул_товар, дата).
-    # Если сортировка всё равно делается в БД (без индекса) — она может вызвать тот же DiskFull.
     logging.info("[get_top_products] Работа в fallback режиме (чанки).")
 
     cols_sql = "дата, склад, артикул_товар, наименование, остаток"
@@ -187,17 +186,12 @@ def get_top_products(top_n=100, sklads=None, groups=None, chunksize=200_000):
     prev_last = {}  # ключ: (склад, артикул) -> последний остаток (float)
 
     try:
-        # Читаем чанками
         for chunk in pd.read_sql(text(sql), engine, params=params, chunksize=chunksize):
-            # Быстрая очистка типов
             if chunk.empty:
                 continue
-            # Удобство: убедимся в нужных типах
             chunk['остаток'] = pd.to_numeric(chunk['остаток'], errors='coerce').fillna(0).astype(float)
-            # Гарантируем сортировку в чанке (чтобы быть уверенным в порядке внутри чанка)
             chunk = chunk.sort_values(['склад', 'артикул_товар', 'дата'])
 
-            # Проходим по группам (склад, артикул_товар)
             gb = chunk.groupby(['склад', 'артикул_товар'], sort=False)
             for (sklad, art), grp in gb:
                 arr = grp['остаток'].to_numpy(dtype=float)
@@ -206,36 +200,30 @@ def get_top_products(top_n=100, sklads=None, groups=None, chunksize=200_000):
                 key_name = grp['наименование'].iat[0] if 'наименование' in grp.columns else None
                 map_key = (art, key_name, sklad)
 
-                prev = prev_last.get((sklad, art), None)
-                # учитываем переход из прошлой чанки
+                prev = prev_last.get((sklad, art))
                 if prev is not None:
                     d0 = prev - arr[0]
                     if d0 > 0:
                         prod_sums[map_key] += float(d0)
 
-                # вычисляем внутренние diffs в чанке
                 if arr.size > 1:
                     diffs = arr[:-1] - arr[1:]
                     pos = float(np.sum(diffs[diffs > 0]))
                     prod_sums[map_key] += pos
 
-                # запомним последний остаток для следующей чанки
                 prev_last[(sklad, art)] = float(arr[-1])
 
-        # Сформируем DataFrame результата
         if not prod_sums:
             return pd.DataFrame(columns=["артикул_товар", "наименование", "склад", "продано"])
 
-        rows = []
-        for (art, name, sklad), val in prod_sums.items():
-            rows.append({"артикул_товар": art, "наименование": name, "склад": sklad, "продано": val})
+        rows = [{"артикул_товар": art, "наименование": name, "склад": sklad, "продано": val}
+                for (art, name, sklad), val in prod_sums.items()]
         df_res = pd.DataFrame(rows)
         df_res = df_res.sort_values("продано", ascending=False).head(int(top_n)).reset_index(drop=True)
         return df_res
 
-    except Exception as e:
+    except Exception:
         logging.exception("[get_top_products] Ошибка в потоковом режиме")
-        # В крайнем случае возвращаем пустой DF
         return pd.DataFrame(columns=["артикул_товар", "наименование", "склад", "продано"])
 
 
@@ -256,7 +244,6 @@ def get_product_timeseries(article, sklads=None, month=None):
         params["sklads"] = sklads
 
     if month:
-        # month ожидается целое 1-12
         filters.append("EXTRACT(MONTH FROM дата) = :month")
         params["month"] = int(month)
 
@@ -270,22 +257,20 @@ def get_product_timeseries(article, sklads=None, month=None):
     """
 
     try:
-        q = text(query_text)
         with engine.connect() as conn:
-            df = pd.read_sql(q, conn, params=params)
+            df = pd.read_sql(text(query_text), conn, params=params)
 
         if df is None or df.empty:
             return pd.DataFrame(columns=["дата", "склад", "артикул_товар", "наименование", "остаток", "цена"])
 
-        # Приведения
         df["дата"] = pd.to_datetime(df["дата"])
         df["остаток"] = pd.to_numeric(df["остаток"], errors="coerce").fillna(0)
-        # убрать возможный '$' или пробелы, затем to_numeric
         if "цена" in df.columns:
-            df["цена"] = pd.to_numeric(df["цена"].astype(str).replace("[\$,]", "", regex=True), errors="coerce").fillna(0)
+            df["цена"] = pd.to_numeric(df["цена"].astype(str).replace(r"[\$,]", "", regex=True),
+                                       errors="coerce").fillna(0)
         return df
 
-    except Exception as e:
+    except Exception:
         logging.exception("[get_product_timeseries] Ошибка выполнения запроса")
         return pd.DataFrame(columns=["дата", "склад", "артикул_товар", "наименование", "остаток", "цена"])
 
@@ -547,6 +532,7 @@ app.layout = html.Div([
     html.H1("Анализ складских данных"),
 
     dcc.Tabs([
+
         # ===================== Основной анализ =====================
         dcc.Tab(label="Основной анализ", children=[
             # ===================== Блок ТОПЫ =====================
@@ -695,38 +681,34 @@ app.layout = html.Div([
         # ===================== Вкладка 2025 =====================
         dcc.Tab(label="Анализ 2025", children=[
             html.Div([
-                # ===================== Загрузка новых данных =====================
-                html.Div([
-                    html.H3("Загрузить новые данные"),
-                    dcc.Upload(
-                        id='upload-data',
-                        children=html.Div([
-                            'Перетащите файл сюда или ',
-                            html.A('выберите файл')
-                        ]),
-                        style={
-                            'width': '100%',
-                            'height': '60px',
-                            'lineHeight': '60px',
-                            'borderWidth': '1px',
-                            'borderStyle': 'dashed',
-                            'borderRadius': '5px',
-                            'textAlign': 'center',
-                            'marginBottom': '20px'
-                        },
-                        multiple=False
-                    ),
-                    dcc.Loading(
-                        id="loading-upload",
-                        type="circle",
-                        children=html.Div(
-                            id='upload-status',
-                            style={'marginTop': '10px', 'color': 'green'}
-                        )
+                html.H3("Загрузить новые данные"),
+                dcc.Upload(
+                    id='upload-data',
+                    children=html.Div([
+                        'Перетащите файл сюда или ',
+                        html.A('выберите файл')
+                    ]),
+                    style={
+                        'width': '100%',
+                        'height': '60px',
+                        'lineHeight': '60px',
+                        'borderWidth': '1px',
+                        'borderStyle': 'dashed',
+                        'borderRadius': '5px',
+                        'textAlign': 'center',
+                        'marginBottom': '20px'
+                    },
+                    multiple=False
+                ),
+                dcc.Loading(
+                    id="loading-upload",
+                    type="circle",
+                    children=html.Div(
+                        id='upload-status',
+                        style={'marginTop': '10px', 'color': 'green'}
                     )
-                ], style={'marginBottom': '30px'}),
+                ),
 
-                # ===================== Фильтры =====================
                 html.Div([
                     html.Label("Склад:"),
                     dcc.Dropdown(
@@ -773,11 +755,9 @@ app.layout = html.Div([
                     ),
                 ], style={'maxWidth': 500, 'marginBottom': 30}),
 
-                # ===================== Линейный график =====================
                 html.H3("Динамика продаж, пополнений и цены выбранного товара"),
                 dcc.Graph(id='graph-2025-line'),
 
-                # ===================== Таблица ТОП =====================
                 html.Div([
                     html.Label("Размер ТОПа:"),
                     dcc.RadioItems(
@@ -825,7 +805,6 @@ app.layout = html.Div([
                     row_selectable="single",
                 ),
 
-                # ===================== Новая кнопка выгрузки =====================
                 html.Div([
                     dbc.Button(
                         "📥 Выгрузить в Excel (с учётом фильтров)",
@@ -844,50 +823,14 @@ app.layout = html.Div([
                 html.H2("Анализ данных Альянс"),
 
                 # --- Фильтры ---
-                html.Div([
-                    html.Label("Склад:"),
-                    dcc.Dropdown(
-                        id="alyans-sklad-filter",
-                        multi=True,
-                        placeholder="Выберите склад"
-                    ),
-
-                    html.Label("Группа:"),
-                    dcc.Dropdown(
-                        id="alyans-group-filter",
-                        multi=True,
-                        placeholder="Выберите группу"
-                    ),
-
-                    html.Label("Артикул:"),
-                    dcc.Dropdown(
-                        id="alyans-article-filter",
-                        multi=False,
-                        placeholder="Выберите артикул"
-                    ),
-
-                    html.Label("Номенклатура:"),
-                    dcc.Dropdown(
-                        id="alyans-nom-filter",
-                        multi=False,
-                        placeholder="Выберите номенклатуру"
-                    ),
-
-                    html.Label("Диапазон дат:"),
-                    dcc.DatePickerRange(
-                        id="alyans-date-range",
-                        start_date_placeholder_text="Начало периода",
-                        end_date_placeholder_text="Конец периода",
-                        display_format="DD-MM-YYYY"
-                    ),
-                ], style={'maxWidth': 500, 'marginBottom': 30}),
+                html.Div(id="alyans-filters", style={'maxWidth': 500, 'marginBottom': 30}),
 
                 # --- График ---
-                html.H3("Динамика продаж, пополнений и цены"),
+                html.H3("Динамика остатков и продаж по выбранному товару"),
                 dcc.Loading(
                     id="loading-alyans-graph",
                     type="circle",
-                    children=dcc.Graph(id="alyans-line-graph")
+                    children=dcc.Graph(id="alyans-graph")
                 ),
 
                 # --- Таблица ТОП ---
@@ -911,12 +854,11 @@ app.layout = html.Div([
                     id="loading-alyans-table",
                     type="circle",
                     children=dash_table.DataTable(
-                        id="alyans-top-table",
+                        id="alyans-table",
                         columns=[
                             {"name": "Артикул", "id": "Артикул"},
-                            {"name": "Номенклатура", "id": "Номенклатура"},
+                            {"name": "Наименование", "id": "Наименование"},
                             {"name": "Продано", "id": "Продано"},
-                            {"name": "Пополнено", "id": "Пополнено"},
                             {"name": "Склад", "id": "Склад"},
                         ],
                         style_table={
@@ -940,7 +882,6 @@ app.layout = html.Div([
                     )
                 ),
 
-                # --- Кнопка выгрузки ---
                 html.Div([
                     dbc.Button(
                         "📥 Выгрузить в Excel (с учётом фильтров)",
@@ -960,6 +901,7 @@ app.layout = html.Div([
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# -------------------- Колбэк для фильтров --------------------
 @app.callback(
     Output("alyans-filters", "children"),
     Input("tabs", "active_tab")
@@ -968,14 +910,16 @@ def load_filters(active_tab):
     if active_tab != "alyans":
         return []  # пока пусто
     
-    sklads = get_unique_sklads()
-    groups = get_unique_groups()
+    sklads = _ensure_list(get_unique_sklads())
+    groups = _ensure_list(get_unique_groups())
 
     return [
         dcc.Dropdown(id="alyans-sklad", options=[{"label": s, "value": s} for s in sklads], multi=True),
         dcc.Dropdown(id="alyans-group", options=[{"label": g, "value": g} for g in groups], multi=True),
     ]
 
+
+# -------------------- Колбэк для таблицы ТОП --------------------
 @app.callback(
     Output("alyans-table", "data"),
     Output("alyans-table", "selected_rows"),
@@ -987,10 +931,15 @@ def load_filters(active_tab):
     State("alyans-table", "selected_rows")
 )
 def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev_selected):
-    df = get_top_products(top_n=top_n, sklads=selected_sklads, groups=selected_groups)
+    top_n = int(top_n or 100)
+    sklads = _ensure_list(selected_sklads)
+    groups = _ensure_list(selected_groups)
 
+    df = get_top_products(top_n=top_n, sklads=sklads, groups=groups)
+
+    title = f"ТОП-{top_n} товаров по продажам (Альянс)"
     if df.empty:
-        return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
+        return [], [], title
 
     df = df.rename(columns={
         "артикул_товар": "Артикул",
@@ -1001,20 +950,20 @@ def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev
 
     records = df.to_dict("records")
 
-    # Сохраняем выбор
+    # Сохраняем выбор пользователя
     if prev_selected and prev_data:
         try:
             old_row = prev_data[prev_selected[0]]
             for idx, row in enumerate(records):
                 if row["Артикул"] == old_row["Артикул"] and row["Наименование"] == old_row["Наименование"]:
-                    return records, [idx], f"ТОП-{top_n} товаров по продажам (Альянс)"
+                    return records, [idx], title
         except Exception:
             pass
 
-    return records, [], f"ТОП-{top_n} товаров по продажам (Альянс)"
+    return records, [], title
 
 
-# --- График по выбранному товару (замена update_alyans_graph) ---
+# -------------------- Колбэк для графика по выбранному товару --------------------
 @app.callback(
     Output("alyans-graph", "figure"),
     Input("alyans-table", "selected_rows"),
@@ -1022,31 +971,38 @@ def update_alyans_table(selected_sklads, selected_groups, top_n, prev_data, prev
     Input("alyans-sklad", "value"),
 )
 def update_alyans_graph(selected_rows, table_data, selected_sklads):
+    sklads = _ensure_list(selected_sklads)
+
     if not selected_rows or not table_data:
         return go.Figure(layout=go.Layout(
             title="Выберите товар из таблицы ТОП для отображения графика",
-            xaxis_title="Дата", yaxis_title="Остаток"
+            xaxis_title="Дата",
+            yaxis_title="Остаток"
         ))
 
     row = table_data[selected_rows[0]]
     article = row["Артикул"]
 
-    df_ts = get_product_timeseries(article, sklads=selected_sklads)
+    df_ts = get_product_timeseries(article, sklads=sklads)
 
     if df_ts.empty:
         return go.Figure(layout=go.Layout(
             title="Нет данных для выбранного товара",
-            xaxis_title="Дата", yaxis_title="Остаток"
+            xaxis_title="Дата",
+            yaxis_title="Остаток"
         ))
 
     fig = go.Figure()
+
     for sklad in df_ts["склад"].unique():
         df_s = df_ts[df_ts["склад"] == sklad].sort_values("дата")
         df_s["Продано"] = (df_s["остаток"].shift(1) - df_s["остаток"]).clip(lower=0).fillna(0)
 
         fig.add_trace(go.Scatter(
-            x=df_s["дата"], y=df_s["остаток"],
-            mode="lines+markers", name=sklad,
+            x=df_s["дата"],
+            y=df_s["остаток"],
+            mode="lines+markers",
+            name=sklad,
             text=[sklad]*len(df_s),
             customdata=df_s[["Продано", "цена"]].values,
             hovertemplate=(
@@ -1060,9 +1016,11 @@ def update_alyans_graph(selected_rows, table_data, selected_sklads):
 
     fig.update_layout(
         title=f"Динамика остатков и продаж — {article} ({row['Наименование']})",
-        xaxis_title="Дата", yaxis_title="Остаток",
+        xaxis_title="Дата",
+        yaxis_title="Остаток",
         hovermode="closest"
     )
+
     return fig
 
 
