@@ -780,6 +780,7 @@ def load_filters(active_tab):
 
 
 # -------------------- Колбэк для таблицы ТОП --------------------
+# -------------------- Колбэк для таблицы ТОП --------------------
 @app.callback(
     Output("alyans-table", "data"),
     Output("alyans-table", "selected_rows"),
@@ -799,11 +800,7 @@ def update_alyans_table(active_tab, selected_sklads, selected_groups, top_n, pre
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
-    if not sklads and not groups:
-        return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
-
     try:
-        # Агрегируем продажи в SQL, берём только top_n
         sql = """
             SELECT склад, артикул_товар, наименование, SUM(остаток) AS продано
             FROM alyans_data
@@ -835,7 +832,7 @@ def update_alyans_table(active_tab, selected_sklads, selected_groups, top_n, pre
 
         records = df.to_dict("records")
 
-        # Сохраняем выбор пользователя
+        # Восстанавливаем выбранную строку
         if prev_selected and prev_data:
             try:
                 old_row = prev_data[prev_selected[0]]
@@ -852,74 +849,56 @@ def update_alyans_table(active_tab, selected_sklads, selected_groups, top_n, pre
         return [], [], f"ТОП-{top_n} товаров по продажам (Альянс)"
 
 
-# -------------------- Колбэк для графика --------------------
+# -------------------- Колбэк для графика по выбранному товару --------------------
 @app.callback(
     Output("alyans-graph", "figure"),
-    Input("alyans-sklad", "value"),
-    Input("alyans-group", "value"),
-    Input("alyans-top-size", "value")
+    Input("alyans-table", "data"),
+    Input("alyans-table", "selected_rows")
 )
-def update_alyans_graph(selected_sklads, selected_groups, top_n):
-    sklads = _ensure_list(selected_sklads)
-    groups = _ensure_list(selected_groups)
-    top_n = int(top_n or 100)
-
-    if not sklads and not groups:
+def update_alyans_graph(table_data, selected_rows):
+    if not table_data or not selected_rows:
         return go.Figure()
 
     try:
+        selected = table_data[selected_rows[0]]
+        sklad = selected["Склад"]
+        artikul = selected["Артикул"]
+
         sql = """
-            SELECT склад, артикул_товар, наименование, SUM(остаток) AS продано
+            SELECT дата, склад, артикул_товар, наименование, SUM(остаток) AS продано
             FROM alyans_data
-            WHERE 1=1
+            WHERE склад = :sklad AND артикул_товар = :artikul
+            GROUP BY дата, склад, артикул_товар, наименование
+            ORDER BY дата
         """
-        params = {}
-        if sklads:
-            sql += " AND склад = ANY(:sklads)"
-            params["sklads"] = sklads
-        if groups:
-            sql += " AND группа = ANY(:groups)"
-            params["groups"] = groups
-
-        sql += " GROUP BY склад, артикул_товар, наименование"
-        sql += " ORDER BY продано DESC LIMIT :top_n"
-        params["top_n"] = top_n
-
+        params = {"sklad": sklad, "artikul": artikul}
         df = pd.read_sql(text(sql), engine, params=params)
 
         if df.empty:
             return go.Figure()
 
-        df = df.rename(columns={
-            "артикул_товар": "Артикул",
-            "наименование": "Наименование",
-            "склад": "Склад",
-            "продано": "Продано"
-        })
-
         fig = go.Figure()
-        for sklad in df['Склад'].unique():
-            df_s = df[df['Склад'] == sklad]
-            fig.add_trace(go.Bar(
-                x=df_s['Наименование'],
-                y=df_s['Продано'],
-                name=f"Склад {sklad}"
-            ))
+        fig.add_trace(go.Scatter(
+            x=df["дата"],
+            y=df["продано"],
+            mode="lines+markers",
+            name=f"{artikul} ({sklad})",
+            text=df["наименование"],
+            hovertemplate="Дата: %{x}<br>Продано: %{y}<br>%{text}"
+        ))
 
         fig.update_layout(
-            title="Динамика продаж товаров (Альянс)",
-            xaxis_title="Товар",
+            title=f"Динамика продаж: {artikul} ({sklad})",
+            xaxis_title="Дата",
             yaxis_title="Продано",
-            barmode='group',
-            xaxis_tickangle=-45,
-            template='plotly_white',
+            template="plotly_white",
             height=500
         )
 
         return fig
 
     except Exception as e:
-        print(f"[update_alyans_graph] Ошибка получения данных: {e}")
+        print(f"[update_alyans_graph] Ошибка построения графика: {e}")
         return go.Figure()
 
 # --- Утилиты ---
