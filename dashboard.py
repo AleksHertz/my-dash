@@ -33,6 +33,8 @@ import psycopg2
 from sqlalchemy import create_engine, text
 from collections import defaultdict
 from sqlalchemy.exc import OperationalError
+import re
+from difflib import get_close_matches
 # --------------------
 # НАСТРОЙКИ
 # --------------------
@@ -512,12 +514,18 @@ app.layout = html.Div([
                 html.H3("Топ самых ходовых товаров"),
                 html.Div(
                     dcc.Graph(id='graph-top-fast'),
-                    style={'height': '700px', 'overflowY': 'scroll',
-                           'border': '1px solid #ddd', 'padding': '5px',
-                           'marginBottom': '10px', 'backgroundColor': 'white'}
+                    style={
+                        'height': '700px', 'overflowY': 'scroll',
+                        'border': '1px solid #ddd', 'padding': '5px',
+                        'marginBottom': '10px', 'backgroundColor': 'white'
+                    }
                 ),
-                dbc.Button("📥 Выгрузить топ ходовых в Excel",
-                           id="download-top-fast-btn", color="success", className="mb-4"),
+                dbc.Button(
+                    "📥 Выгрузить топ ходовых в Excel",
+                    id="download-top-fast-btn",
+                    color="success",
+                    className="mb-4"
+                ),
 
                 html.Label("Выберите количество позиций для отображения товаров по пополнениям:"),
                 dcc.RadioItems(
@@ -535,12 +543,17 @@ app.layout = html.Div([
                 html.H3("Топ товаров по пополнениям"),
                 html.Div(
                     dcc.Graph(id='graph-top-restock'),
-                    style={'height': '700px', 'overflowY': 'scroll',
-                           'border': '1px solid #ddd', 'padding': '5px',
-                           'marginBottom': '10px', 'backgroundColor': 'white'}
+                    style={
+                        'height': '700px', 'overflowY': 'scroll',
+                        'border': '1px solid #ddd', 'padding': '5px',
+                        'marginBottom': '10px', 'backgroundColor': 'white'
+                    }
                 ),
-                dbc.Button("📥 Выгрузить топ пополнений в Excel",
-                           id="download-top-restock-btn", color="success"),
+                dbc.Button(
+                    "📥 Выгрузить топ пополнений в Excel",
+                    id="download-top-restock-btn",
+                    color="success"
+                ),
 
                 dcc.Download(id="download-top-fast"),
                 dcc.Download(id="download-top-restock"),
@@ -577,8 +590,10 @@ app.layout = html.Div([
                     ),
                     html.Button("📥 Скачать в Excel", id="btn-download-peaks", n_clicks=0),
                     dcc.Download(id="download-peaks-xlsx"),
-                ], style={'maxWidth': 450, 'marginBottom': 30,
-                          'display': 'flex', 'flexDirection': 'column', 'gap': '10px'}),
+                ], style={
+                    'maxWidth': 450, 'marginBottom': 30,
+                    'display': 'flex', 'flexDirection': 'column', 'gap': '10px'
+                }),
                 dcc.Graph(id='graph-peaks'),
                 html.Div([
                     html.P("График отображает:"),
@@ -587,7 +602,10 @@ app.layout = html.Div([
                         html.Li("Средняя цена (пунктирная линия, правая ось)"),
                         html.Li("Изменение цены в процентах (штриховая линия, правая ось)"),
                     ]),
-                ], style={'maxWidth': 600, 'fontStyle': 'italic', 'color': 'gray', 'marginTop': 10}),
+                ], style={
+                    'maxWidth': 600, 'fontStyle': 'italic',
+                    'color': 'gray', 'marginTop': 10
+                }),
             ]),
         ]),
 
@@ -598,13 +616,18 @@ app.layout = html.Div([
                 dcc.Upload(
                     id='upload-data',
                     children=html.Div(['Перетащите файл сюда или ', html.A('выберите файл')]),
-                    style={'width': '100%', 'height': '60px', 'lineHeight': '60px',
-                           'borderWidth': '1px', 'borderStyle': 'dashed', 'borderRadius': '5px',
-                           'textAlign': 'center', 'marginBottom': '20px'},
+                    style={
+                        'width': '100%', 'height': '60px', 'lineHeight': '60px',
+                        'borderWidth': '1px', 'borderStyle': 'dashed', 'borderRadius': '5px',
+                        'textAlign': 'center', 'marginBottom': '20px'
+                    },
                     multiple=False
                 ),
-                dcc.Loading(id="loading-upload", type="circle",
-                            children=html.Div(id='upload-status', style={'marginTop': '10px', 'color': 'green'})),
+                dcc.Loading(
+                    id="loading-upload",
+                    type="circle",
+                    children=html.Div(id='upload-status', style={'marginTop': '10px', 'color': 'green'})
+                ),
 
                 html.Div([
                     html.Label("Склад:"),
@@ -612,31 +635,46 @@ app.layout = html.Div([
                         id='sklad-2025-filter',
                         options=[{'label': s, 'value': s} for s in unique_sklads_2025],
                         value=unique_sklads_2025,
-                        multi=True, placeholder="Выберите склад", clearable=True,
+                        multi=True,
+                        placeholder="Выберите склад",
+                        clearable=True,
                         style={'marginBottom': '15px'}
                     ),
+
                     html.Label("Артикул:"),
                     dcc.Dropdown(
                         id='article-2025-filter',
                         options=[{'label': a, 'value': a} for a in unique_articles_2025],
-                        multi=False, placeholder="Выберите артикул", clearable=True,
-                        style={'marginBottom': '15px'}
+                        multi=False,
+                        placeholder="Введите или выберите артикул",
+                        clearable=True,
+                        style={'marginBottom': '5px'}
                     ),
+                    html.Div(
+                        id="article-hint",
+                        style={"fontSize": "13px", "color": "#888", "marginBottom": "15px"}
+                    ),
+
                     html.Label("Номенклатура:"),
                     dcc.Dropdown(
                         id='nom-2025-filter',
                         options=[{'label': n, 'value': n} for n in unique_noms_2025],
-                        multi=False, placeholder="Выберите номенклатуру", clearable=True,
+                        multi=False,
+                        placeholder="Выберите номенклатуру",
+                        clearable=True,
                         style={'marginBottom': '15px'}
                     ),
+
                     html.Label("Месяц:"),
                     dcc.Dropdown(
                         id='month-2025-filter',
                         options=[{'label': m, 'value': i+1} for i, m in enumerate([
-                            'Январь','Февраль','Март','Апрель','Май','Июнь',
-                            'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'
+                            'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+                            'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
                         ])],
-                        multi=False, placeholder="Выберите месяц", clearable=True,
+                        multi=False,
+                        placeholder="Выберите месяц",
+                        clearable=True,
                         style={'marginBottom': '20px'}
                     ),
                 ], style={'maxWidth': 500, 'marginBottom': 30}),
@@ -654,7 +692,8 @@ app.layout = html.Div([
                             {"label": "Топ-250", "value": 250},
                             {"label": "Топ-500", "value": 500},
                         ],
-                        value=100, inline=True
+                        value=100,
+                        inline=True
                     ),
                 ], style={"marginBottom": "10px"}),
 
@@ -668,17 +707,29 @@ app.layout = html.Div([
                         {"name": "Продано", "id": "Продано"},
                         {"name": "Склад", "id": "Склад"},
                     ],
-                    style_table={"overflowX": "auto", "maxHeight": "500px",
-                                 "overflowY": "scroll", "width": "100%"},
-                    style_cell={"textAlign": "left", "padding": "5px",
-                                "textDecoration": "none", "whiteSpace": "normal", "height": "auto"},
-                    style_header={"fontWeight": "bold", "backgroundColor": "#f0f0f0", "textDecoration": "none"},
-                    page_size=20, row_selectable="single",
+                    style_table={
+                        "overflowX": "auto", "maxHeight": "500px",
+                        "overflowY": "scroll", "width": "100%"
+                    },
+                    style_cell={
+                        "textAlign": "left", "padding": "5px",
+                        "textDecoration": "none", "whiteSpace": "normal", "height": "auto"
+                    },
+                    style_header={
+                        "fontWeight": "bold", "backgroundColor": "#f0f0f0",
+                        "textDecoration": "none"
+                    },
+                    page_size=20,
+                    row_selectable="single",
                 ),
 
                 html.Div([
-                    dbc.Button("📥 Выгрузить в Excel (с учётом фильтров)",
-                               id="download-2025-btn", color="primary", className="mt-3"),
+                    dbc.Button(
+                        "📥 Выгрузить в Excel (с учётом фильтров)",
+                        id="download-2025-btn",
+                        color="primary",
+                        className="mt-3"
+                    ),
                     dcc.Download(id="download-2025-xlsx"),
                 ], style={"marginTop": "20px"})
             ])
@@ -739,22 +790,40 @@ app.layout = html.Div([
                             {"name": "Продано", "id": "Продано"},
                             {"name": "Склад", "id": "Склад"},
                         ],
-                        style_table={"overflowX": "auto", "maxHeight": "500px", "overflowY": "scroll", "width": "100%"},
-                        style_cell={"textAlign": "left", "padding": "5px", "whiteSpace": "normal", "height": "auto"},
-                        style_header={"fontWeight": "bold", "backgroundColor": "#f0f0f0"},
-                        page_size=20, row_selectable="single",
+                        style_table={
+                            "overflowX": "auto",
+                            "maxHeight": "500px",
+                            "overflowY": "scroll",
+                            "width": "100%"
+                        },
+                        style_cell={
+                            "textAlign": "left", "padding": "5px",
+                            "whiteSpace": "normal",
+                            "height": "auto"
+                        },
+                        style_header={
+                            "fontWeight": "bold",
+                            "backgroundColor": "#f0f0f0"
+                        },
+                        page_size=20,
+                        row_selectable="single",
                     )
                 ),
 
                 html.Div([
-                    dbc.Button("📥 Выгрузить в Excel (с учётом фильтров)",
-                               id="download-alyans-btn", color="primary", className="mt-3"),
+                    dbc.Button(
+                        "📥 Выгрузить в Excel (с учётом фильтров)",
+                        id="download-alyans-btn",
+                        color="primary",
+                        className="mt-3"
+                    ),
                     dcc.Download(id="download-alyans-xlsx"),
                 ], style={"marginTop": "20px"})
             ])
         ]),
     ])
 ])
+
 # --------------------
 # КОЛБЭКИ
 # --------------------
@@ -1173,7 +1242,61 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
         legend=dict(orientation="h", y=-0.2)
     )
     return fig
+# --- вспомогательная функция для нормализации артикула ---
+def normalize_article(article: str):
+    """Удаляет все нецифровые символы для сравнения артикулов"""
+    if not isinstance(article, str):
+        return ""
+    return re.sub(r"\D", "", article)
 
+@app.callback(
+    Output("article-hint", "children"),
+    Input("article-2025-filter", "search_value"),
+)
+def suggest_similar_article(search_value):
+    if not search_value:
+        return ""
+    norm_search = normalize_article(search_value)
+    if not norm_search:
+        return ""
+
+    # создаем словарь: нормализованный → оригинальный артикул
+    norm_map = {normalize_article(a): a for a in unique_articles_2025}
+    all_norm = list(norm_map.keys())
+
+    # ищем ближайшее совпадение
+    matches = get_close_matches(norm_search, all_norm, n=1, cutoff=0.7)
+    if matches:
+        suggestion = norm_map[matches[0]]
+        return f"💡 Возможно, вы имели в виду: {suggestion}"
+    return "❌ Артикул не найден"
+
+# ------------------- Колбэк: синхронизация артикула и номенклатуры -------------------
+@app.callback(
+    Output("article-2025-filter", "value"),
+    Output("nom-2025-filter", "value"),
+    Input("article-2025-filter", "value"),
+    Input("nom-2025-filter", "value"),
+    prevent_initial_call=True
+)
+def sync_article_nom(article_value, nom_value):
+    # если выбран артикул, подставляем связанную номенклатуру
+    if article_value and not nom_value:
+        df_row = df_2025_clean[df_2025_clean["Артикул_товар"] == article_value]
+        if not df_row.empty:
+            nom_match = df_row["Номенклатура_канон"].iloc[0]
+            return article_value, nom_match
+        return article_value, no_update
+
+    # если выбрана номенклатура, подставляем артикул
+    if nom_value and not article_value:
+        df_row = df_2025_clean[df_2025_clean["Номенклатура_канон"] == nom_value]
+        if not df_row.empty:
+            article_match = df_row["Артикул_товар"].iloc[0]
+            return article_match, nom_value
+        return no_update, nom_value
+
+    return article_value, nom_value
 # ------------------- Таблица топ-100 -------------------
 # ------------------- Таблица ТОП-N -------------------
 @app.callback(
