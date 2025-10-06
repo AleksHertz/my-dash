@@ -1176,61 +1176,7 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
         legend=dict(orientation="h", y=-0.2)
     )
     return fig
-# --- вспомогательная функция для нормализации артикула ---
-def normalize_article(article: str):
-    """Удаляет все нецифровые символы для сравнения артикулов"""
-    if not isinstance(article, str):
-        return ""
-    return re.sub(r"\D", "", article)
 
-@app.callback(
-    Output("article-hint", "children"),
-    Input("article-2025-filter", "search_value"),
-)
-def suggest_similar_article(search_value):
-    try:
-        if not search_value:
-            return ""
-        norm_search = normalize_article(search_value)
-        if not norm_search:
-            return ""
-        norm_map = {normalize_article(a): a for a in unique_articles_2025}
-        all_norm = list(norm_map.keys())
-        matches = get_close_matches(norm_search, all_norm, n=1, cutoff=0.7)
-        if matches:
-            suggestion = norm_map[matches[0]]
-            return f"💡 Возможно, вы имели в виду: {suggestion}"
-        return "❌ Артикул не найден"
-    except Exception as e:
-        print(f"Ошибка подсказки: {e}")
-        return ""
-
-# ------------------- Колбэк: синхронизация артикула и номенклатуры -------------------
-@app.callback(
-    Output("article-2025-filter", "value"),
-    Output("nom-2025-filter", "value"),
-    Input("article-2025-filter", "value"),
-    Input("nom-2025-filter", "value"),
-    prevent_initial_call=True
-)
-def sync_article_nom(article_value, nom_value):
-    # если выбран артикул, подставляем связанную номенклатуру
-    if article_value and not nom_value:
-        df_row = df_2025_clean[df_2025_clean["Артикул_товар"] == article_value]
-        if not df_row.empty:
-            nom_match = df_row["Номенклатура_канон"].iloc[0]
-            return article_value, nom_match
-        return article_value, no_update
-
-    # если выбрана номенклатура, подставляем артикул
-    if nom_value and not article_value:
-        df_row = df_2025_clean[df_2025_clean["Номенклатура_канон"] == nom_value]
-        if not df_row.empty:
-            article_match = df_row["Артикул_товар"].iloc[0]
-            return article_match, nom_value
-        return no_update, nom_value
-
-    return article_value, nom_value
 # ------------------- Таблица топ-100 -------------------
 # ------------------- Таблица ТОП-N -------------------
 @app.callback(
