@@ -1254,22 +1254,22 @@ def normalize_article(article: str):
     Input("article-2025-filter", "search_value"),
 )
 def suggest_similar_article(search_value):
-    if not search_value:
+    try:
+        if not search_value:
+            return ""
+        norm_search = normalize_article(search_value)
+        if not norm_search:
+            return ""
+        norm_map = {normalize_article(a): a for a in unique_articles_2025}
+        all_norm = list(norm_map.keys())
+        matches = get_close_matches(norm_search, all_norm, n=1, cutoff=0.7)
+        if matches:
+            suggestion = norm_map[matches[0]]
+            return f"💡 Возможно, вы имели в виду: {suggestion}"
+        return "❌ Артикул не найден"
+    except Exception as e:
+        print(f"Ошибка подсказки: {e}")
         return ""
-    norm_search = normalize_article(search_value)
-    if not norm_search:
-        return ""
-
-    # создаем словарь: нормализованный → оригинальный артикул
-    norm_map = {normalize_article(a): a for a in unique_articles_2025}
-    all_norm = list(norm_map.keys())
-
-    # ищем ближайшее совпадение
-    matches = get_close_matches(norm_search, all_norm, n=1, cutoff=0.7)
-    if matches:
-        suggestion = norm_map[matches[0]]
-        return f"💡 Возможно, вы имели в виду: {suggestion}"
-    return "❌ Артикул не найден"
 
 # ------------------- Колбэк: синхронизация артикула и номенклатуры -------------------
 @app.callback(
