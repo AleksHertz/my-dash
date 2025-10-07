@@ -1338,36 +1338,45 @@ ALL_ARTICLES_NORM = {a: normalize_article(a) for a in ALL_ARTICLES_2025}
 @app.callback(
     Output("article-2025-filter", "options"),
     Input("article-2025-filter", "search_value"),
+    State("article-2025-filter", "value"),
 )
-def update_article_options(search_value):
-    """Подбирает варианты артикула при вводе"""
+def update_article_options(search_value, current_value):
+    """
+    Умный поиск артикула:
+    - показывает до 50 подходящих вариантов
+    - поддерживает частичный ввод и вставку целого артикула
+    - сохраняет выбранное значение
+    """
+    # если пользователь ничего не вводил — показываем 50 первых
     if not search_value:
-        # при пустом вводе — первые 50
-        return [{"label": a, "value": a} for a in ALL_ARTICLES_2025[:50]]
+        opts = [{"label": a, "value": a} for a in ALL_ARTICLES_2025[:50]]
+        # добавляем текущее значение, если его нет в списке
+        if current_value and current_value not in [o["value"] for o in opts]:
+            opts.insert(0, {"label": current_value, "value": current_value})
+        return opts
 
-    search_value = str(search_value).strip()
-    norm_search = normalize_article(search_value)
+    # нормализуем ввод
+    norm_search = normalize_article(str(search_value))
 
-    # фильтруем: совпадение по подстроке или нормализованным цифрам
+    # ищем все совпадения по цифрам или подстроке
     matches = [
         a for a, norm in ALL_ARTICLES_NORM.items()
-        if norm_search in norm or search_value in a
+        if norm_search in norm or search_value.lower() in a.lower()
     ]
 
-    # если нет прямых совпадений — ищем по частичному совпадению цифр
-    if not matches and len(norm_search) > 3:
-        matches = [
-            a for a, norm in ALL_ARTICLES_NORM.items()
-            if norm_search[:3] in norm or norm.startswith(norm_search[:3])
-        ]
-
+    # ограничиваем результат
     matches = list(dict.fromkeys(matches))[:50]
 
+    # если нет совпадений — добавляем текущий артикул в начало
     if not matches:
-        return [{"label": f"❌ Нет совпадений для '{search_value}'", "value": None}]
+        opts = [{"label": f"❌ Нет совпадений для '{search_value}'", "value": None}]
+    else:
+        opts = [{"label": a, "value": a} for a in matches]
 
-    return [{"label": a, "value": a} for a in matches]
+    if current_value and current_value not in [o["value"] for o in opts]:
+        opts.insert(0, {"label": current_value, "value": current_value})
 
+    return opts
 
 
 
