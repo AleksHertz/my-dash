@@ -1311,7 +1311,7 @@ def normalize_article(article: str) -> str:
 # --- подсказка при вводе артикула (по search_value) ---
 @app.callback(
     Output("article-hint", "children"),
-    Input("article-2025-filter", "value"),
+    Input("article-2025-filter", "search_value"),
 )
 def suggest_similar_article(search_value):
     if not search_value:
@@ -1321,11 +1321,9 @@ def suggest_similar_article(search_value):
     if not norm_search:
         return ""
 
-    # создаем словарь: нормализованный → оригинальный артикул
     norm_map = {normalize_article(str(a)): str(a) for a in unique_articles_2025 if a is not None}
     all_norm = list(norm_map.keys())
 
-    # ищем ближайшее совпадение
     matches = get_close_matches(norm_search, all_norm, n=1, cutoff=0.7)
     if matches:
         suggestion = norm_map[matches[0]]
