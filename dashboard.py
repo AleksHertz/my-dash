@@ -481,7 +481,6 @@ app.layout = html.Div([
     html.H1("Анализ складских данных"),
 
     dcc.Tabs(id="tabs", value="main", children=[
-
         # ===================== Основной анализ =====================
         dcc.Tab(label="Основной анализ", value="main", children=[
             html.Div([
@@ -515,9 +514,12 @@ app.layout = html.Div([
                 html.Div(
                     dcc.Graph(id='graph-top-fast'),
                     style={
-                        'height': '700px', 'overflowY': 'scroll',
-                        'border': '1px solid #ddd', 'padding': '5px',
-                        'marginBottom': '10px', 'backgroundColor': 'white'
+                        'height': '700px',
+                        'overflowY': 'scroll',
+                        'border': '1px solid #ddd',
+                        'padding': '5px',
+                        'marginBottom': '10px',
+                        'backgroundColor': 'white'
                     }
                 ),
                 dbc.Button(
@@ -544,9 +546,12 @@ app.layout = html.Div([
                 html.Div(
                     dcc.Graph(id='graph-top-restock'),
                     style={
-                        'height': '700px', 'overflowY': 'scroll',
-                        'border': '1px solid #ddd', 'padding': '5px',
-                        'marginBottom': '10px', 'backgroundColor': 'white'
+                        'height': '700px',
+                        'overflowY': 'scroll',
+                        'border': '1px solid #ddd',
+                        'padding': '5px',
+                        'marginBottom': '10px',
+                        'backgroundColor': 'white'
                     }
                 ),
                 dbc.Button(
@@ -591,8 +596,11 @@ app.layout = html.Div([
                     html.Button("📥 Скачать в Excel", id="btn-download-peaks", n_clicks=0),
                     dcc.Download(id="download-peaks-xlsx"),
                 ], style={
-                    'maxWidth': 450, 'marginBottom': 30,
-                    'display': 'flex', 'flexDirection': 'column', 'gap': '10px'
+                    'maxWidth': 450,
+                    'marginBottom': 30,
+                    'display': 'flex',
+                    'flexDirection': 'column',
+                    'gap': '10px'
                 }),
                 dcc.Graph(id='graph-peaks'),
                 html.Div([
@@ -603,8 +611,10 @@ app.layout = html.Div([
                         html.Li("Изменение цены в процентах (штриховая линия, правая ось)"),
                     ]),
                 ], style={
-                    'maxWidth': 600, 'fontStyle': 'italic',
-                    'color': 'gray', 'marginTop': 10
+                    'maxWidth': 600,
+                    'fontStyle': 'italic',
+                    'color': 'gray',
+                    'marginTop': 10
                 }),
             ]),
         ]),
@@ -617,9 +627,14 @@ app.layout = html.Div([
                     id='upload-data',
                     children=html.Div(['Перетащите файл сюда или ', html.A('выберите файл')]),
                     style={
-                        'width': '100%', 'height': '60px', 'lineHeight': '60px',
-                        'borderWidth': '1px', 'borderStyle': 'dashed', 'borderRadius': '5px',
-                        'textAlign': 'center', 'marginBottom': '20px'
+                        'width': '100%',
+                        'height': '60px',
+                        'lineHeight': '60px',
+                        'borderWidth': '1px',
+                        'borderStyle': 'dashed',
+                        'borderRadius': '5px',
+                        'textAlign': 'center',
+                        'marginBottom': '20px'
                     },
                     multiple=False
                 ),
@@ -708,15 +723,21 @@ app.layout = html.Div([
                         {"name": "Склад", "id": "Склад"},
                     ],
                     style_table={
-                        "overflowX": "auto", "maxHeight": "500px",
-                        "overflowY": "scroll", "width": "100%"
+                        "overflowX": "auto",
+                        "maxHeight": "500px",
+                        "overflowY": "scroll",
+                        "width": "100%"
                     },
                     style_cell={
-                        "textAlign": "left", "padding": "5px",
-                        "textDecoration": "none", "whiteSpace": "normal", "height": "auto"
+                        "textAlign": "left",
+                        "padding": "5px",
+                        "textDecoration": "none",
+                        "whiteSpace": "normal",
+                        "height": "auto"
                     },
                     style_header={
-                        "fontWeight": "bold", "backgroundColor": "#f0f0f0",
+                        "fontWeight": "bold",
+                        "backgroundColor": "#f0f0f0",
                         "textDecoration": "none"
                     },
                     page_size=20,
@@ -797,7 +818,8 @@ app.layout = html.Div([
                             "width": "100%"
                         },
                         style_cell={
-                            "textAlign": "left", "padding": "5px",
+                            "textAlign": "left",
+                            "padding": "5px",
                             "whiteSpace": "normal",
                             "height": "auto"
                         },
@@ -1311,24 +1333,35 @@ def normalize_article(article: str) -> str:
 # --- подсказка при вводе артикула (по search_value) ---
 @app.callback(
     Output("article-hint", "children"),
+    Input("article-2025-filter", "value"),
     Input("article-2025-filter", "search_value"),
+    prevent_initial_call=True
 )
-def suggest_similar_article(search_value):
-    if not search_value:
+def suggest_similar_article(value, search_value):
+    # выбираем, что использовать — приоритет у search_value
+    search_text = search_value or value
+    if not search_text:
         return ""
 
-    norm_search = normalize_article(search_value)
+    norm_search = normalize_article(search_text)
     if not norm_search:
         return ""
 
-    norm_map = {normalize_article(str(a)): str(a) for a in unique_articles_2025 if a is not None}
+    # нормализуем список артикулов
+    norm_map = {
+        normalize_article(str(a)): str(a)
+        for a in unique_articles_2025 if a
+    }
     all_norm = list(norm_map.keys())
 
+    # ищем похожий артикул
     matches = get_close_matches(norm_search, all_norm, n=1, cutoff=0.7)
+
     if matches:
         suggestion = norm_map[matches[0]]
-        if suggestion != search_value:
+        if suggestion != search_text:
             return f"💡 Возможно, вы имели в виду: {suggestion}"
+
     return ""
 
 
