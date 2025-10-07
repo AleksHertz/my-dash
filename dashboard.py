@@ -659,11 +659,10 @@ app.layout = html.Div([
                     html.Label("Артикул:"),
                     dcc.Dropdown(
                         id='article-2025-filter',
-                        options=[{'label': a, 'value': a} for a in unique_articles_2025],
                         multi=False,
                         placeholder="Введите или выберите артикул",
                         clearable=True,
-                        style={'marginBottom': '5px'}
+                        style={'marginBottom': '15px'}
                     ),
                     html.Div(
                         id="article-hint",
@@ -1323,62 +1322,54 @@ def update_top_table(selected_sklads, top_n, prev_data, prev_selected):
     return records, [], f"ТОП-{top_n} товаров по продажам (2025)"
 
 # --- нормализация артикула (оставляем) ---
-def normalize_article(article: str) -> str:
-    """Удаляет все нецифровые символы для сравнения артикулов"""
+def normalize_article(article):
+    """Удаляет все нецифровые символы"""
     if not isinstance(article, str):
         return ""
     return re.sub(r"\D", "", article)
 
-# --- Предвычисляем карту нормализованных артикулов ---
-ARTICLE_NORM_MAP = defaultdict(list)
-for a in unique_articles_2025:
-    if a is None:
-        continue
-    norm = normalize_article(str(a))
-    if norm:
-        ARTICLE_NORM_MAP[norm].append(str(a))
-ARTICLE_NORM_KEYS = list(ARTICLE_NORM_MAP.keys())
+
+# --- предобработка всех артикулов ---
 ALL_ARTICLES_2025 = [str(a) for a in unique_articles_2025 if a is not None]
+ALL_ARTICLES_NORM = {a: normalize_article(a) for a in ALL_ARTICLES_2025}
 
 
-# --- подсказка при вводе артикула (по search_value) ---
+# --- колбэк для фильтрации ---
 @app.callback(
     Output("article-2025-filter", "options"),
     Input("article-2025-filter", "search_value"),
 )
 def update_article_options(search_value):
-    """Обновляет список доступных артикулов по мере ввода пользователем"""
+    """Подбирает варианты артикула при вводе"""
     if not search_value:
-        # ничего не введено — показываем первые 50 артикулов (чтобы не грузить браузер)
+        # при пустом вводе — первые 50
         return [{"label": a, "value": a} for a in ALL_ARTICLES_2025[:50]]
 
-    norm_search = normalize_article(str(search_value))
-    if not norm_search:
-        return [{"label": a, "value": a} for a in ALL_ARTICLES_2025[:50]]
+    search_value = str(search_value).strip()
+    norm_search = normalize_article(search_value)
 
-    # --- ищем похожие артикулы ---
-    # 1) точное совпадение
-    if norm_search in ARTICLE_NORM_MAP:
-        matches = ARTICLE_NORM_MAP[norm_search]
-    else:
-        # 2) fuzzy + частичное совпадение
-        fuzzy_matches = get_close_matches(norm_search, ARTICLE_NORM_KEYS, n=10, cutoff=0.6)
-        matches = []
-        for fm in fuzzy_matches:
-            matches.extend(ARTICLE_NORM_MAP[fm])
+    # фильтруем: совпадение по подстроке или нормализованным цифрам
+    matches = [
+        a for a, norm in ALL_ARTICLES_NORM.items()
+        if norm_search in norm or search_value in a
+    ]
 
-        # 3) ищем по вхождению цифр (например, "98051" найдёт "8-98051-275-0")
-        for art in ALL_ARTICLES_2025:
-            if norm_search in normalize_article(art):
-                matches.append(art)
+    # если нет прямых совпадений — ищем по частичному совпадению цифр
+    if not matches and len(norm_search) > 3:
+        matches = [
+            a for a, norm in ALL_ARTICLES_NORM.items()
+            if norm_search[:3] in norm or norm.startswith(norm_search[:3])
+        ]
 
-    # Убираем дубликаты, ограничиваем длину
-    matches = list(dict.fromkeys(matches))[:30]
+    matches = list(dict.fromkeys(matches))[:50]
 
     if not matches:
         return [{"label": f"❌ Нет совпадений для '{search_value}'", "value": None}]
 
     return [{"label": a, "value": a} for a in matches]
+
+
+
 
 
 # -------------------
