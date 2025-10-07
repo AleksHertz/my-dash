@@ -1311,34 +1311,27 @@ def normalize_article(article: str) -> str:
 # --- подсказка при вводе артикула (по search_value) ---
 @app.callback(
     Output("article-hint", "children"),
-    Input("article-2025-filter", "search_value"),
+    Input("article-2025-filter", "value"),
 )
 def suggest_similar_article(search_value):
-    try:
-        if not search_value:
-            return ""
-        norm_search = normalize_article(search_value)
-        if not norm_search:
-            return ""
+    if not search_value:
+        return ""
 
-        # Убедитесь, что unique_articles_2025 определён (list[str])
-        norm_map = {normalize_article(str(a)): str(a) for a in unique_articles_2025 if a is not None}
-        if not norm_map:
-            return ""
+    norm_search = normalize_article(search_value)
+    if not norm_search:
+        return ""
 
-        matches = get_close_matches(norm_search, list(norm_map.keys()), n=1, cutoff=0.7)
-        if matches:
-            suggestion = norm_map[matches[0]]
+    # создаем словарь: нормализованный → оригинальный артикул
+    norm_map = {normalize_article(str(a)): str(a) for a in unique_articles_2025 if a is not None}
+    all_norm = list(norm_map.keys())
+
+    # ищем ближайшее совпадение
+    matches = get_close_matches(norm_search, all_norm, n=1, cutoff=0.7)
+    if matches:
+        suggestion = norm_map[matches[0]]
+        if suggestion != search_value:
             return f"💡 Возможно, вы имели в виду: {suggestion}"
-        # если нет совпадений — пустая подсказка (не ломаем интерфейс)
-        return ""
-    except Exception as e:
-        # логируем, но возвращаем пустую подсказку, чтобы не ломать интерфейс
-        try:
-            logger.exception("[suggest_similar_article] Ошибка: %s", e)
-        except Exception:
-            print("[suggest_similar_article] Ошибка:", e)
-        return ""
+    return ""
 
 
 # -------------------
