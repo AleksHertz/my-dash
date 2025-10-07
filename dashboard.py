@@ -1329,40 +1329,56 @@ def normalize_article(article: str) -> str:
         return ""
     return re.sub(r"\D", "", article)
 
+# --- Предвычисляем карту нормализованных артикулов ---
+ARTICLE_NORM_MAP = defaultdict(list)
+for a in unique_articles_2025:
+    if a is None:
+        continue
+    norm = normalize_article(str(a))
+    if norm:
+        ARTICLE_NORM_MAP[norm].append(str(a))
+ARTICLE_NORM_KEYS = list(ARTICLE_NORM_MAP.keys())
+ALL_ARTICLES_2025 = [str(a) for a in unique_articles_2025 if a is not None]
+
 
 # --- подсказка при вводе артикула (по search_value) ---
 @app.callback(
-    Output("article-hint", "children"),
-    Input("article-2025-filter", "value"),
+    Output("article-2025-filter", "options"),
     Input("article-2025-filter", "search_value"),
-    prevent_initial_call=True
 )
-def suggest_similar_article(value, search_value):
-    # выбираем, что использовать — приоритет у search_value
-    search_text = search_value or value
-    if not search_text:
-        return ""
+def update_article_options(search_value):
+    """Обновляет список доступных артикулов по мере ввода пользователем"""
+    if not search_value:
+        # ничего не введено — показываем первые 50 артикулов (чтобы не грузить браузер)
+        return [{"label": a, "value": a} for a in ALL_ARTICLES_2025[:50]]
 
-    norm_search = normalize_article(search_text)
+    norm_search = normalize_article(str(search_value))
     if not norm_search:
-        return ""
+        return [{"label": a, "value": a} for a in ALL_ARTICLES_2025[:50]]
 
-    # нормализуем список артикулов
-    norm_map = {
-        normalize_article(str(a)): str(a)
-        for a in unique_articles_2025 if a
-    }
-    all_norm = list(norm_map.keys())
+    # --- ищем похожие артикулы ---
+    # 1) точное совпадение
+    if norm_search in ARTICLE_NORM_MAP:
+        matches = ARTICLE_NORM_MAP[norm_search]
+    else:
+        # 2) fuzzy + частичное совпадение
+        fuzzy_matches = get_close_matches(norm_search, ARTICLE_NORM_KEYS, n=10, cutoff=0.6)
+        matches = []
+        for fm in fuzzy_matches:
+            matches.extend(ARTICLE_NORM_MAP[fm])
 
-    # ищем похожий артикул
-    matches = get_close_matches(norm_search, all_norm, n=1, cutoff=0.7)
+        # 3) ищем по вхождению цифр (например, "98051" найдёт "8-98051-275-0")
+        for art in ALL_ARTICLES_2025:
+            if norm_search in normalize_article(art):
+                matches.append(art)
 
-    if matches:
-        suggestion = norm_map[matches[0]]
-        if suggestion != search_text:
-            return f"💡 Возможно, вы имели в виду: {suggestion}"
+    # Убираем дубликаты, ограничиваем длину
+    matches = list(dict.fromkeys(matches))[:30]
 
-    return ""
+    if not matches:
+        return [{"label": f"❌ Нет совпадений для '{search_value}'", "value": None}]
+
+    return [{"label": a, "value": a} for a in matches]
 
 
 # -------------------
