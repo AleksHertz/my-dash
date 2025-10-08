@@ -650,16 +650,13 @@ app.layout = html.Div([
         dcc.Tab(label="Анализ 2025", value="2025", children=[
             html.Div([
                 html.H3("Загрузить новые данные"),
-                html.Div(
-                    [
-                        html.Span(
-                            f"📅 Данные актуальны на: {get_latest_upload_date()}",
-                            id="data-update-date",
-                            style={"fontSize": "14px", "color": "#555", "marginLeft": "5px"}
-                        )
-                    ],
-                    style={"marginBottom": "15px"}
-                ),
+                html.Div([
+                    html.Span(
+                        f"📅 Данные актуальны на: {get_latest_upload_date()}",
+                        id="data-update-date",
+                        style={"fontSize": "14px", "color": "#555", "marginLeft": "5px"}
+                    )
+                ], style={"marginBottom": "15px"}),
 
                 dcc.Upload(
                     id='upload-data',
@@ -703,10 +700,7 @@ app.layout = html.Div([
                         clearable=True,
                         style={'marginBottom': '15px'}
                     ),
-                    html.Div(
-                        id="article-hint",
-                        style={"fontSize": "13px", "color": "#888", "marginBottom": "15px"}
-                    ),
+                    html.Div(id="article-hint", style={"fontSize": "13px", "color": "#888", "marginBottom": "15px"}),
 
                     html.Label("Номенклатура:"),
                     dcc.Dropdown(
@@ -769,14 +763,12 @@ app.layout = html.Div([
                     style_cell={
                         "textAlign": "left",
                         "padding": "5px",
-                        "textDecoration": "none",
                         "whiteSpace": "normal",
                         "height": "auto"
                     },
                     style_header={
                         "fontWeight": "bold",
-                        "backgroundColor": "#f0f0f0",
-                        "textDecoration": "none"
+                        "backgroundColor": "#f0f0f0"
                     },
                     page_size=20,
                     row_selectable="single",
@@ -798,6 +790,18 @@ app.layout = html.Div([
         dcc.Tab(label="Альянс", value="alyans", children=[
             html.Div([
                 html.H2("Анализ данных Альянс"),
+
+                html.Label("Проект:"),
+                dcc.Dropdown(
+                    id="alyans-project",
+                    options=[
+                        {"label": "Корея", "value": "Корея"},
+                        {"label": "Китай", "value": "Китай"},
+                    ],
+                    multi=False,
+                    placeholder="Выберите проект",
+                    style={"marginBottom": "15px"}
+                ),
 
                 html.Label("Склад:"),
                 dcc.Dropdown(
@@ -884,7 +888,6 @@ app.layout = html.Div([
     ])
 ])
 
-
 # --------------------
 # КОЛБЭКИ
 # --------------------
@@ -914,18 +917,19 @@ def load_filters(active_tab):
     ]
 
 
-# -------------------- Таблица ТОП --------------------
-# -------------------- Таблица ТОП --------------------
+# -------------------- Таблица ТОП продаж --------------------
 @app.callback(
     Output("alyans-table", "data"),
     Output("alyans-table", "selected_rows"),
     Output("alyans-top-title", "children"),
     Input("alyans-sklad", "value"),
     Input("alyans-group", "value"),
+    Input("project-filter", "value"),  # 🔹 новый фильтр
     Input("alyans-top-size", "value"),
 )
-def update_alyans_table(selected_sklads, selected_groups, top_n):
+def update_alyans_table(selected_sklads, selected_groups, selected_project, top_n):
     logger = logging.getLogger("update_alyans_table")
+
     try:
         top_n = int(top_n or 50)
     except Exception:
@@ -934,39 +938,59 @@ def update_alyans_table(selected_sklads, selected_groups, top_n):
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
+    # --- 🔹 Фильтрация по проекту ---
+    korea_groups = [
+        "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
+        "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
+        "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
+        "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
+        "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
+        "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
+        "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
+    ]
+
     # Требуем хотя бы один фильтр
-    if not sklads and not groups:
-        title = "Выберите склад или группу (чтобы показать ТОП)"
+    if not sklads and not groups and not selected_project:
+        title = "Выберите склад, группу или проект (чтобы показать ТОП)"
         return [], [], title
 
-    # Ограничение по дате, если выбран только склад (без группы)
-    date_limit_clause = ""
     params = {"top_n": top_n}
-    if sklads and not groups:
-        start_date = (datetime.utcnow().date() - timedelta(days=180)).isoformat()
-        date_limit_clause = " AND дата >= :start_date"
-        params["start_date"] = start_date
-
-    if sklads:
-        params["sklads"] = sklads
-    if groups:
-        params["groups"] = groups
-
-    # where
     where_parts = ["1=1"]
+
+    # --- фильтр по складам ---
     if sklads:
         where_parts.append("склад = ANY(:sklads)")
+        params["sklads"] = sklads
+
+    # --- фильтр по группам ---
     if groups:
         where_parts.append("группа = ANY(:groups)")
-    if date_limit_clause:
+        params["groups"] = groups
+
+    # --- 🔹 фильтр по проекту ---
+    if selected_project == "korea":
+        where_parts.append("группа = ANY(:korea_groups)")
+        params["korea_groups"] = korea_groups
+    elif selected_project == "china":
+        # пока без фильтрации, просто заглушка
+        pass
+
+    # --- ограничение по дате (если выбран только склад) ---
+    if sklads and not groups and not selected_project:
+        start_date = (datetime.utcnow().date() - timedelta(days=180)).isoformat()
         where_parts.append("дата >= :start_date")
+        params["start_date"] = start_date
+
     where_clause = " AND ".join(where_parts)
 
-    # Решение: если выбрано >1 склад — агрегируем по артикулам (Суммарно).
+    # --- решаем, нужно ли агрегировать по складам ---
     aggregate_across_sklads = bool(sklads and len(sklads) > 1)
 
     if aggregate_across_sklads:
-        # агрегируем продажи по всем выбранным складам
         window_sql = f"""
         WITH diffs AS (
             SELECT
@@ -985,7 +1009,6 @@ def update_alyans_table(selected_sklads, selected_groups, top_n):
         LIMIT :top_n;
         """
     else:
-        # стандартный вариант — группируем по складу
         window_sql = f"""
         WITH diffs AS (
             SELECT
@@ -1009,18 +1032,16 @@ def update_alyans_table(selected_sklads, selected_groups, top_n):
             df = pd.read_sql(text(window_sql), conn, params=params)
     except Exception as e:
         logger.exception("[update_alyans_table] Ошибка запроса:")
-        title = f"ТОП-{top_n} товаров (Альянс) — ошибка запроса (см. логи)"
+        title = f"ТОП-{top_n} товаров (Альянс) — ошибка запроса"
         return [], [], title
 
-    if df is None or df.empty:
+    if df.empty:
         title = f"ТОП-{top_n} товаров (Альянс) — нет данных"
         return [], [], title
 
     if aggregate_across_sklads:
-        # добавим колонку Склад = "Суммарно"
         df["Склад"] = "Суммарно"
     else:
-        # переименуем оригинальную колонку
         df = df.rename(columns={"склад": "Склад"})
 
     df = df.rename(columns={
@@ -1039,8 +1060,9 @@ def update_alyans_table(selected_sklads, selected_groups, top_n):
     Output("alyans-graph", "figure"),
     Input("alyans-table", "data"),
     Input("alyans-table", "selected_rows"),
+    Input("project-filter", "value"),  # 🔹 поддержка фильтра проекта
 )
-def update_alyans_graph(table_data, selected_rows):
+def update_alyans_graph(table_data, selected_rows, selected_project):
     logger = logging.getLogger("update_alyans_graph")
 
     if not table_data or not selected_rows:
@@ -1052,15 +1074,33 @@ def update_alyans_graph(table_data, selected_rows):
         name = sel.get("Наименование", "")
         sklad = sel.get("Склад")
 
-        # Если выбраны все склады, нужно агрегировать
-        # (берём все строки с этим артикулом по всем складам)
-        sql = """
+        params = {"artikul": artikul}
+        where_parts = ["артикул_товар = :artikul"]
+
+        # --- 🔹 фильтрация по проекту ---
+        if selected_project == "korea":
+            where_parts.append("группа = ANY(:korea_groups)")
+            params["korea_groups"] = [
+                "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
+                "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
+                "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
+                "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
+                "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
+                "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
+                "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
+                "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
+                "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
+                "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
+                "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
+            ]
+
+        where_clause = " AND ".join(where_parts)
+        sql = f"""
             SELECT дата, склад, остаток, цена
             FROM alyans_data
-            WHERE артикул_товар = :artikul
+            WHERE {where_clause}
             ORDER BY дата ASC, склад;
         """
-        params = {"artikul": artikul}
 
         with engine.connect() as conn:
             df = pd.read_sql(text(sql), conn, params=params)
@@ -1068,23 +1108,23 @@ def update_alyans_graph(table_data, selected_rows):
         if df.empty:
             return go.Figure(layout=go.Layout(title="Нет данных по выбранному товару"))
 
-        # --- Преобразование и очистка ---
+        # --- обработка ---
         df["дата"] = pd.to_datetime(df["дата"])
         df["остаток"] = pd.to_numeric(df["остаток"], errors="coerce").fillna(0)
         df["цена"] = pd.to_numeric(df["цена"].astype(str).replace(r"[\$,]", "", regex=True), errors="coerce").fillna(0)
 
-        # --- Агрегирование по дате (сумма остатков всех складов) ---
+        # --- агрегирование по дате ---
         agg = df.groupby("дата", as_index=False).agg({
             "остаток": "sum",
-            "цена": "mean"   # или last — если не усредняем по складам
+            "цена": "mean"
         })
 
-        # --- Расчёт продаж и пополнений ---
+        # --- расчёт продаж и пополнений ---
         agg = agg.sort_values("дата").reset_index(drop=True)
         agg["Продано"] = (agg["остаток"].shift(1) - agg["остаток"]).clip(lower=0).fillna(0)
         agg["Пополнено"] = (agg["остаток"] - agg["остаток"].shift(1)).clip(lower=0).fillna(0)
 
-        # --- График ---
+        # --- график ---
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=agg["дата"],
@@ -1095,7 +1135,7 @@ def update_alyans_graph(table_data, selected_rows):
             customdata=agg[["Продано", "Пополнено", "цена"]].values,
             hovertemplate=(
                 "<b>Дата:</b> %{x|%d-%m-%Y}<br>"
-                "<b>Остаток (всего):</b> %{y}<br>"
+                "<b>Остаток:</b> %{y}<br>"
                 "<b>Продано:</b> %{customdata[0]}<br>"
                 "<b>Пополнено:</b> %{customdata[1]}<br>"
                 "<b>Цена:</b> %{customdata[2]} ₽<extra></extra>"
@@ -1116,7 +1156,6 @@ def update_alyans_graph(table_data, selected_rows):
     except Exception:
         logger.exception("[update_alyans_graph] Ошибка при построении графика")
         return go.Figure(layout=go.Layout(title="Ошибка при построении графика"))
-
 
 
 # --- Утилиты ---
