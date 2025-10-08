@@ -89,7 +89,21 @@ DB_URL = "postgresql://postgres:SyngvjjliGqUBYDKibMmoOWCVUZVdFjc@tramway.proxy.r
 # Создаём движок (параметры пула можно настроить)
 engine = create_engine(DB_URL, pool_pre_ping=True)
 
+def get_latest_upload_date():
+    """Возвращает дату последнего загруженного файла в формате ДД.ММ.ГГГГ"""
+    files = glob.glob("new_uploads_*.csv")
+    if not files:
+        return "нет данных"
 
+    latest_file = max(files, key=os.path.getmtime)
+    try:
+        # пример имени: new_uploads_2025-10-02_14-46.csv
+        date_part = latest_file.split("_")[2]  # '2025-10-02'
+        dt = datetime.strptime(date_part, "%Y-%m-%d")
+        return dt.strftime("%d.%m.%Y")
+    except Exception:
+        return "неизвестно"
+        
 def _ensure_list(v):
     if v is None:
         return None
@@ -474,7 +488,7 @@ unique_noms_2025 = sorted(df_2025_clean["Номенклатура_канон"].d
 # --------------------
 # DASH APP
 # --------------------
-app = dash.Dash(__name__)
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 server = app.server
 
 app.layout = html.Div([
@@ -623,6 +637,17 @@ app.layout = html.Div([
         dcc.Tab(label="Анализ 2025", value="2025", children=[
             html.Div([
                 html.H3("Загрузить новые данные"),
+                html.Div(
+                    [
+                        html.Span(
+                            f"📅 Данные актуальны на: {get_latest_upload_date()}",
+                            id="data-update-date",
+                            style={"fontSize": "14px", "color": "#555", "marginLeft": "5px"}
+                        )
+                    ],
+                    style={"marginBottom": "15px"}
+                ),
+
                 dcc.Upload(
                     id='upload-data',
                     children=html.Div(['Перетащите файл сюда или ', html.A('выберите файл')]),
