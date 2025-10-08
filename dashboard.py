@@ -1171,11 +1171,11 @@ def upload_new_csv_to_github(csv_path: str):
     Input("article-2025-filter", "value"),
     Input("nom-2025-filter", "value"),
     Input("sklad-2025-filter", "value"),
-    Input("month-2025-filter", "value")  # <-- добавили фильтр по месяцу
+    Input("month-2025-filter", "value")
 )
 def update_line_graph(selected_article, selected_nom, selected_sklads, selected_month):
-    # Если товар не выбран, возвращаем пустой график
-    if not selected_article or not selected_nom:
+    # --- Проверка: хотя бы одно поле товара должно быть выбрано ---
+    if not selected_article and not selected_nom:
         return go.Figure(
             layout=go.Layout(
                 title="Выберите товар из таблицы ТОП-100 для отображения графика",
@@ -1186,15 +1186,27 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
 
     dff = df_2025_clean.copy()
 
-    # Фильтры
+    # --- Приводим типы к строкам, чтобы избежать numpy.int64 конфликтов ---
+    dff["Артикул_товар"] = dff["Артикул_товар"].astype(str)
+    dff["Номенклатура_канон"] = dff["Номенклатура_канон"].astype(str)
+
+    if selected_article:
+        dff = dff[dff["Артикул_товар"] == str(selected_article)]
+    if selected_nom:
+        dff = dff[dff["Номенклатура_канон"] == str(selected_nom)]
+
+    # --- Фильтр по складу ---
     if selected_sklads:
         dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
-    dff = dff[(dff["Артикул_товар"].astype(str) == str(selected_article)) &
-              (dff["Номенклатура_канон"] == selected_nom)]
 
     # --- Фильтр по месяцу ---
     if selected_month:
-        dff = dff[dff["Дата"].dt.month == selected_month]
+        if not pd.api.types.is_datetime64_any_dtype(dff["Дата"]):
+            dff["Дата"] = pd.to_datetime(dff["Дата"], errors="coerce")
+        try:
+            dff = dff[dff["Дата"].dt.month == int(selected_month)]
+        except Exception:
+            pass
 
     if dff.empty:
         return go.Figure(
@@ -1205,27 +1217,43 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
             )
         )
 
+    # --- Формирование графика ---
     fig = go.Figure()
     for sklad in dff["Склад"].unique():
         df_s = dff[dff["Склад"] == sklad].sort_values("Дата").copy()
+
+        # --- Обработка числовых колонок ---
+        df_s["Остаток"] = pd.to_numeric(df_s["Остаток"], errors="coerce").fillna(0)
+        df_s["Цена"] = pd.to_numeric(
+            df_s["Цена"].astype(str).str.replace(r"[^\d.,-]", "", regex=True).str.replace(",", "."),
+            errors="coerce"
+        ).fillna(0)
+
+        # --- Расчёты ---
         df_s["Продано_fix"] = (df_s["Остаток"].shift(1) - df_s["Остаток"]).clip(lower=0).fillna(0)
         df_s["Пополнено_fix"] = (df_s["Остаток"] - df_s["Остаток"].shift(1)).clip(lower=0).fillna(0)
         df_s["Среднее_Продано"] = df_s["Продано_fix"].rolling(7, min_periods=1).mean()
         df_s["Всплеск"] = df_s["Продано_fix"] > 1.5 * df_s["Среднее_Продано"]
         df_s["Цена_изменилась"] = df_s["Цена"].diff().fillna(0) != 0
-        df_s["Цвет"] = df_s.apply(lambda row: "purple" if row["Всплеск"] and row["Цена_изменилась"]
-                                   else "red" if row["Всплеск"]
-                                   else "green" if row["Цена_изменилась"]
-                                   else "blue", axis=1)
+
+        # --- Цвета точек ---
+        df_s["Цвет"] = df_s.apply(
+            lambda row: "purple" if row["Всплеск"] and row["Цена_изменилась"]
+            else "red" if row["Всплеск"]
+            else "green" if row["Цена_изменилась"]
+            else "blue",
+            axis=1
+        )
         df_s["Размер"] = df_s["Всплеск"].apply(lambda x: 10 if x else 5)
 
+        # --- Добавляем серию ---
         fig.add_trace(go.Scatter(
             x=df_s["Дата"],
             y=df_s["Остаток"],
             mode="lines+markers",
             name=str(sklad),
             marker=dict(size=df_s["Размер"], color=df_s["Цвет"]),
-            text=[sklad]*len(df_s),
+            text=[sklad] * len(df_s),
             customdata=df_s[[
                 "Продано_fix", "Пополнено_fix", "Цена",
                 "Артикул_товар", "Номенклатура_канон", "Всплеск", "Цена_изменилась"
@@ -1245,7 +1273,7 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
             showlegend=False
         ))
 
-    # Легенда
+    # --- Легенда ---
     legend_colors = {
         "Всплеск": "red",
         "Изменение цены": "green",
@@ -1253,15 +1281,19 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
         "Обычный день": "blue"
     }
     for label, color in legend_colors.items():
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers",
-                                 marker=dict(size=8, color=color), name=label))
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=8, color=color), name=label
+        ))
 
     fig.update_layout(
-        title="Динамика остатков, продаж и цен (2025)",
+        title=f"Динамика остатков, продаж и цен (2025)",
         xaxis_title="Дата",
         yaxis_title="Остаток",
         hovermode="closest",
-        legend=dict(orientation="h", y=-0.2)
+        legend=dict(orientation="h", y=-0.2),
+        template="plotly_white",
+        height=520
     )
     return fig
 
@@ -1329,61 +1361,111 @@ def normalize_article(article):
     return re.sub(r"\D", "", article)
 
 
-# --- предобработка всех артикулов ---
+
+
+
+# подготовка словарей — выполнить один раз при старте (после того, как unique_articles_2025 определён)
 ALL_ARTICLES_2025 = [str(a) for a in unique_articles_2025 if a is not None]
-ALL_ARTICLES_NORM = {a: normalize_article(a) for a in ALL_ARTICLES_2025}
+# карта article -> normalized digits
+ALL_ARTICLES_NORM = {a: re.sub(r"\D", "", a) for a in ALL_ARTICLES_2025}
+# обратная: normalized -> list(articles)
+NORM_TO_ARTS = defaultdict(list)
+for a, norm in ALL_ARTICLES_NORM.items():
+    NORM_TO_ARTS[norm].append(a)
 
-
-# --- колбэк для фильтрации ---
+# -------------------
+# callback: динамические options для article-2025-filter
+# -------------------
 @app.callback(
     Output("article-2025-filter", "options"),
     Input("article-2025-filter", "search_value"),
+    Input("top-100-table", "selected_rows"),
+    State("top-100-table", "data"),
     State("article-2025-filter", "value"),
 )
-def update_article_options(search_value, current_value):
+def update_article_options(search_value, selected_rows, table_data, current_value):
     """
-    Умный поиск артикула:
-    - показывает до 50 подходящих вариантов
-    - поддерживает частичный ввод и вставку целого артикула
-    - сохраняет выбранное значение
+    Возвращает список options для article-2025-filter в зависимости от ввода.
+    - Если пользователь выбирает строку в таблице — подставляем этот артикул в options (быстро видно).
+    - При пустом вводе — показываем первые 50 артикулов (и текущий value, если он есть).
+    - При вводе — ищем по нормализованным цифрам и по подстроке в оригинале.
+    - Если нет прямых совпадений — ищем близкие нормализованные варианты (difflib).
+    - Если совсем нет совпадений — возвращаем option "Использовать '...'" с value=введённой строкой.
     """
-    # если пользователь ничего не вводил — показываем 50 первых
+    # 1) если выбор из таблицы — гарантируем, что выбранный артикул попадает в options первым
+    if selected_rows and table_data:
+        try:
+            row = table_data[selected_rows[0]]
+            art = row.get("Артикул")
+            if art:
+                # вернём только пару: выбранный, + пару популярных
+                opts = [{"label": art, "value": art}]
+                # дополняем списком популярных (без дубликата)
+                for a in ALL_ARTICLES_2025:
+                    if a == art:
+                        continue
+                    opts.append({"label": a, "value": a})
+                    if len(opts) >= 50:
+                        break
+                return opts
+        except Exception:
+            pass
+
+    # 2) пустой ввод — первые 50, плюс current_value если есть и не входит в топ50
     if not search_value:
-        opts = [{"label": a, "value": a} for a in ALL_ARTICLES_2025[:50]]
-        # добавляем текущее значение, если его нет в списке
-        if current_value and current_value not in [o["value"] for o in opts]:
-            opts.insert(0, {"label": current_value, "value": current_value})
+        opts = []
+        if current_value:
+            opts.append({"label": current_value, "value": current_value})
+        for a in ALL_ARTICLES_2025[:50]:
+            if a != current_value:
+                opts.append({"label": a, "value": a})
         return opts
 
-    # нормализуем ввод
-    norm_search = normalize_article(str(search_value))
+    # 3) есть ввод — ищем
+    s = str(search_value).strip()
+    norm_s = re.sub(r"\D", "", s)
 
-    # ищем все совпадения по цифрам или подстроке
-    matches = [
-        a for a, norm in ALL_ARTICLES_NORM.items()
-        if norm_search in norm or search_value.lower() in a.lower()
-    ]
+    matches = []
+    # сначала прямые совпадения: нормализованные содержат norm_s или подстрока в оригинале
+    if norm_s:
+        for a, norm in ALL_ARTICLES_NORM.items():
+            if norm_s in norm:
+                matches.append(a)
+    # подстрока в оригинале (без нормализации)
+    if len(matches) < 50:
+        low = s.lower()
+        for a in ALL_ARTICLES_2025:
+            if low in a.lower() and a not in matches:
+                matches.append(a)
+    # если ничего не найдено, попробуем близкие по цифрам
+    if not matches and len(norm_s) >= 3:
+        close = get_close_matches(norm_s, list(NORM_TO_ARTS.keys()), n=8, cutoff=0.6)
+        for cn in close:
+            for a in NORM_TO_ARTS.get(cn, []):
+                if a not in matches:
+                    matches.append(a)
 
-    # ограничиваем результат
-    matches = list(dict.fromkeys(matches))[:50]
+    matches = matches[:50]
 
-    # если нет совпадений — добавляем текущий артикул в начало
     if not matches:
-        opts = [{"label": f"❌ Нет совпадений для '{search_value}'", "value": None}]
-    else:
-        opts = [{"label": a, "value": a} for a in matches]
+        # позволяем пользователю использовать введённую строку как вариант (чтобы не блокировать ввод)
+        return [{"label": f"Использовать '{s}' (нет точных совпадений)", "value": s}]
 
-    if current_value and current_value not in [o["value"] for o in opts]:
-        opts.insert(0, {"label": current_value, "value": current_value})
+    # вставим текущий value наверх, если он есть и пока не входит в matches
+    opts = []
+    if current_value and current_value not in matches:
+        opts.append({"label": current_value, "value": current_value})
 
+    opts.extend([{"label": a, "value": a} for a in matches])
     return opts
+
 
 
 
 
 # -------------------
 # Объединённый колбэк: синхронизация артикула / номенклатуры / выбор из таблицы
-# Заменяет предыдущие два колбэка (удалите их!)
+# (оставим примерно ваш вариант, но безопасно)
 # -------------------
 @app.callback(
     Output("article-2025-filter", "value"),
@@ -1396,70 +1478,50 @@ def update_article_options(search_value, current_value):
     prevent_initial_call=True,
 )
 def sync_article_and_nom(selected_rows, table_data, article_value, nom_value):
-    """
-    Единый обработчик:
-    - при выборе строки в таблице задаёт article + nom, сбрасывает month
-    - при изменении article подставляет соответствующую номенклатуру (если есть)
-    - при изменении nom подставляет соответствующий артикул (если есть)
-    Возвращает dash.no_update для тех полей, которые менять не нужно.
-    """
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update, dash.no_update, dash.no_update
+    trigger = ctx.triggered[0]["prop_id"]
 
-    trigger = ctx.triggered[0]["prop_id"]  # пример: "top-100-table.selected_rows" или "article-2025-filter.value"
-
-    try:
-        # 1) выбор из таблицы
-        if trigger.startswith("top-100-table.selected_rows"):
-            if selected_rows and table_data:
-                # безопасно достаём строку (возможно table_data — список dict)
-                try:
-                    row = table_data[selected_rows[0]]
-                    art = row.get("Артикул")
-                    nom = row.get("Номенклатура")
-                    # при выборе из таблицы сбрасываем месяц (None)
-                    return art, nom, None
-                except Exception:
-                    return dash.no_update, dash.no_update, dash.no_update
-            return dash.no_update, dash.no_update, dash.no_update
-
-        # 2) изменение артикула — подставляем номенклатуру
-        if trigger.startswith("article-2025-filter.value"):
-            # если артикул пустой — ничего не делаем по номенклатуре
-            if not article_value:
-                return article_value, dash.no_update, dash.no_update
-            # ищем в df_2025_clean соответствующую номенклатуру
+    # 1) выбор из таблицы
+    if trigger.startswith("top-100-table.selected_rows"):
+        if selected_rows and table_data:
             try:
-                mask = df_2025_clean["Артикул_товар"].astype(str) == str(article_value)
-                df_row = df_2025_clean[mask]
-                if not df_row.empty:
-                    nom_match = df_row["Номенклатура_канон"].iloc[0]
-                    return article_value, nom_match, dash.no_update
+                row = table_data[selected_rows[0]]
+                art = row.get("Артикул")
+                nom = row.get("Номенклатура")
+                return art, nom, None
             except Exception:
-                # в случае ошибки просто установим артикул и не трогаем номенклатуру
-                return article_value, dash.no_update, dash.no_update
+                return dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
+
+    # 2) изменение артикула — подставляем номенклатуру (если есть)
+    if trigger.startswith("article-2025-filter.value"):
+        if not article_value:
             return article_value, dash.no_update, dash.no_update
-
-        # 3) изменение номенклатуры — подставляем артикул
-        if trigger.startswith("nom-2025-filter.value"):
-            if not nom_value:
-                return dash.no_update, nom_value, dash.no_update
-            try:
-                mask = df_2025_clean["Номенклатура_канон"] == nom_value
-                df_row = df_2025_clean[mask]
-                if not df_row.empty:
-                    article_match = df_row["Артикул_товар"].astype(str).iloc[0]
-                    return article_match, nom_value, dash.no_update
-            except Exception:
-                return dash.no_update, nom_value, dash.no_update
-            return dash.no_update, nom_value, dash.no_update
-
-    except Exception as e:
         try:
-            logger.exception("[sync_article_and_nom] Ошибка: %s", e)
+            mask = df_2025_clean["Артикул_товар"].astype(str) == str(article_value)
+            df_row = df_2025_clean[mask]
+            if not df_row.empty:
+                nom_match = df_row["Номенклатура_канон"].iloc[0]
+                return article_value, nom_match, dash.no_update
         except Exception:
-            print("[sync_article_and_nom] Ошибка:", e)
+            return article_value, dash.no_update, dash.no_update
+        return article_value, dash.no_update, dash.no_update
+
+    # 3) изменение номенклатуры — подставляем артикул (если есть)
+    if trigger.startswith("nom-2025-filter.value"):
+        if not nom_value:
+            return dash.no_update, nom_value, dash.no_update
+        try:
+            mask = df_2025_clean["Номенклатура_канон"] == nom_value
+            df_row = df_2025_clean[mask]
+            if not df_row.empty:
+                article_match = df_row["Артикул_товар"].astype(str).iloc[0]
+                return article_match, nom_value, dash.no_update
+        except Exception:
+            return dash.no_update, nom_value, dash.no_update
+        return dash.no_update, nom_value, dash.no_update
 
     return dash.no_update, dash.no_update, dash.no_update
 # --- Выгрузка топ-ходовых ---
