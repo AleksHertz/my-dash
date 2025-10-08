@@ -89,6 +89,16 @@ DB_URL = "postgresql://postgres:SyngvjjliGqUBYDKibMmoOWCVUZVdFjc@tramway.proxy.r
 # Создаём движок (параметры пула можно настроить)
 engine = create_engine(DB_URL, pool_pre_ping=True)
 
+
+def _ensure_list(value):
+    """Гарантирует, что значение является списком."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
 def get_latest_upload_date():
     """Возвращает дату последнего загруженного файла в формате ДД.ММ.ГГГГ"""
     upload_dir = os.path.join("data", "new_uploads")
