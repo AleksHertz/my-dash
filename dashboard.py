@@ -1039,71 +1039,63 @@ def update_alyans_table(selected_sklads, selected_groups, top_n):
     Output("alyans-graph", "figure"),
     Input("alyans-table", "data"),
     Input("alyans-table", "selected_rows"),
-    Input("alyans-sklad", "value"),  # чтобы знать выбранные склады для агрегации
 )
-def update_alyans_graph(table_data, selected_rows, selected_sklads):
+def update_alyans_graph(table_data, selected_rows):
     logger = logging.getLogger("update_alyans_graph")
+
     if not table_data or not selected_rows:
         return go.Figure(layout=go.Layout(title="Выберите товар в таблице ТОП"))
 
     try:
         sel = table_data[selected_rows[0]]
         artikul = sel.get("Артикул")
-        sklad_in_row = sel.get("Склад", None)  # может быть "Суммарно" или конкретный склад
         name = sel.get("Наименование", "")
+        sklad = sel.get("Склад")
 
-        sklads = _ensure_list(selected_sklads)
-
-        # если строка агрегированная (Суммарно) или в фильтре выбрано >1 склад — агрегация по складам
-        need_aggregate = (sklad_in_row == "Суммарно") or (sklads and len(sklads) > 1)
-
-        # SQL: берем все строки по артикула (и по выбранным складам, если есть),
-        # затем агрегируем по дате в pandas — это проще и надёжнее.
-        sql = "SELECT дата, склад, остаток, цена FROM alyans_data WHERE артикул_товар = :artikul"
-        params = {"artikul": str(artikul)}
-        if need_aggregate and sklads:
-            sql += " AND склад = ANY(:sklads)"
-            params["sklads"] = sklads
-        sql += " ORDER BY дата ASC;"
+        # Если выбраны все склады, нужно агрегировать
+        # (берём все строки с этим артикулом по всем складам)
+        sql = """
+            SELECT дата, склад, остаток, цена
+            FROM alyans_data
+            WHERE артикул_товар = :artikul
+            ORDER BY дата ASC, склад;
+        """
+        params = {"artikul": artikul}
 
         with engine.connect() as conn:
             df = pd.read_sql(text(sql), conn, params=params)
 
-        if df is None or df.empty:
+        if df.empty:
             return go.Figure(layout=go.Layout(title="Нет данных по выбранному товару"))
 
-        # приведения
+        # --- Преобразование и очистка ---
         df["дата"] = pd.to_datetime(df["дата"])
         df["остаток"] = pd.to_numeric(df["остаток"], errors="coerce").fillna(0)
+        df["цена"] = pd.to_numeric(df["цена"].astype(str).replace(r"[\$,]", "", regex=True), errors="coerce").fillna(0)
 
-        # Если агрегируем — суммируем остатки по дате (суммарный остаток по всем складам в день)
-        if need_aggregate:
-            # агрегируем по дате: суммарный остаток, средняя цена
-            df = df.groupby("дата", as_index=False).agg({
-                "остаток": "sum",
-                "цена": lambda x: pd.to_numeric(x.astype(str).str.replace(r"[\$,]", "", regex=True), errors="coerce").mean()
-            }).sort_values("дата").reset_index(drop=True)
-        else:
-            # для одного склада всё равно агрегируем по дате (на случай дублей)
-            df = df.groupby("дата", as_index=False).agg({
-                "остаток": "sum",
-                "цена": lambda x: pd.to_numeric(x.astype(str).str.replace(r"[\$,]", "", regex=True), errors="coerce").mean()
-            }).sort_values("дата").reset_index(drop=True)
+        # --- Агрегирование по дате (сумма остатков всех складов) ---
+        agg = df.groupby("дата", as_index=False).agg({
+            "остаток": "sum",
+            "цена": "mean"   # или last — если не усредняем по складам
+        })
 
-        df["Продано"] = (df["остаток"].shift(1) - df["остаток"]).clip(lower=0).fillna(0)
-        df["Пополнено"] = (df["остаток"] - df["остаток"].shift(1)).clip(lower=0).fillna(0)
+        # --- Расчёт продаж и пополнений ---
+        agg = agg.sort_values("дата").reset_index(drop=True)
+        agg["Продано"] = (agg["остаток"].shift(1) - agg["остаток"]).clip(lower=0).fillna(0)
+        agg["Пополнено"] = (agg["остаток"] - agg["остаток"].shift(1)).clip(lower=0).fillna(0)
 
+        # --- График ---
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=df["дата"],
-            y=df["остаток"],
+            x=agg["дата"],
+            y=agg["остаток"],
             mode="lines+markers",
-            name=f"Остаток ({'Суммарно' if need_aggregate else sklads[0] if sklads else ''})",
+            name="Остаток (все склады)",
             marker=dict(size=6),
-            customdata=df[["Продано", "Пополнено", "цена"]].values,
+            customdata=agg[["Продано", "Пополнено", "цена"]].values,
             hovertemplate=(
                 "<b>Дата:</b> %{x|%d-%m-%Y}<br>"
-                "<b>Остаток:</b> %{y}<br>"
+                "<b>Остаток (всего):</b> %{y}<br>"
                 "<b>Продано:</b> %{customdata[0]}<br>"
                 "<b>Пополнено:</b> %{customdata[1]}<br>"
                 "<b>Цена:</b> %{customdata[2]} ₽<extra></extra>"
@@ -1111,18 +1103,19 @@ def update_alyans_graph(table_data, selected_rows, selected_sklads):
         ))
 
         fig.update_layout(
-            title=f"Динамика остатков и продаж — {artikul} {('('+name+')') if name else ''}",
+            title=f"Динамика остатков — {artikul} {('('+name+')') if name else ''}",
             xaxis_title="Дата",
-            yaxis_title="Остаток",
+            yaxis_title="Остаток (суммарно по складам)",
             hovermode="closest",
             template="plotly_white",
             height=520
         )
+
         return fig
 
     except Exception:
-        logger.exception("[update_alyans_graph] Ошибка получения данных")
-        return go.Figure(layout=go.Layout(title="Ошибка при получении данных (см. логи)"))
+        logger.exception("[update_alyans_graph] Ошибка при построении графика")
+        return go.Figure(layout=go.Layout(title="Ошибка при построении графика"))
 
 
 
