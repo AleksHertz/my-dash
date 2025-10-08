@@ -1369,26 +1369,39 @@ for a, norm in ALL_ARTICLES_NORM.items():
 )
 def update_article_options(search_value):
     """
-    Подбирает артикулы при вводе текста в фильтр.
-    Работает быстро даже при большом числе позиций.
+    Подбирает варианты артикула при вводе.
+    Учитывает дефисы и регистр, поддерживает вставку без символов.
     """
-    all_articles = df_2025_clean["Артикул_товар"].astype(str).unique().tolist()
-
     if not search_value:
-        # показываем первые 100 при пустом вводе
-        subset = all_articles[:100]
-    else:
-        # частичное совпадение без учёта тире
-        normalized_search = search_value.replace("-", "").lower()
-        subset = [
-            a for a in all_articles
-            if normalized_search in a.replace("-", "").lower()
-        ]
-        # если ничего не найдено, показываем несколько вариантов, чтобы избежать "No results"
-        if not subset:
-            subset = all_articles[:20]
+        # при пустом вводе — первые 50
+        return [{"label": a, "value": a} for a in ALL_ARTICLES_2025[:50]]
 
-    return [{"label": a, "value": a} for a in subset]
+    # нормализуем ввод
+    norm_search = normalize_article(search_value)
+
+    # подбираем совпадения по цифрам (без дефисов)
+    matches = [
+        a for a, norm in ALL_ARTICLES_NORM.items()
+        if norm_search in norm or norm in norm_search
+    ]
+
+    # если прямых нет — пробуем fuzzy (через difflib)
+    if not matches:
+        from difflib import get_close_matches
+        all_norm = list(ALL_ARTICLES_NORM.values())
+        close_norms = get_close_matches(norm_search, all_norm, n=50, cutoff=0.6)
+        matches = [
+            a for a, norm in ALL_ARTICLES_NORM.items()
+            if norm in close_norms
+        ]
+
+    # ограничиваем до 50
+    matches = list(dict.fromkeys(matches))[:50]
+
+    if not matches:
+        return [{"label": f"❌ Нет совпадений для '{search_value}'", "value": None}]
+
+    return [{"label": a, "value": a} for a in matches]
 
 
 
@@ -1429,7 +1442,7 @@ def sync_article_and_nom(selected_rows, table_data, article_value, nom_value):
         if not article_value:
             return article_value, dash.no_update, dash.no_update
         try:
-            mask = df_2025_clean["Артикул_товар"].astype(str) == str(article_value)
+            mask = df_2025_clean["Артикул_товар"].astype(str).str.replace(r"\D", "", regex=True) == re.sub(r"\D", "", str(article_value))
             df_row = df_2025_clean[mask]
             if not df_row.empty:
                 nom_match = df_row["Номенклатура_канон"].iloc[0]
