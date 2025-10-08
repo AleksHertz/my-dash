@@ -934,12 +934,12 @@ def update_alyans_table(selected_sklads, selected_groups, top_n):
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
-    # Защита: требуем хотя бы один фильтр (склад или группа) — чтобы не грузить БД целиком
+    # Требуем хотя бы один фильтр
     if not sklads and not groups:
         title = "Выберите склад или группу (чтобы показать ТОП)"
         return [], [], title
 
-    # Если выбран только склад (без группы), ограничим период — чтобы не перегружать БД
+    # Ограничение по дате, если выбран только склад (без группы)
     date_limit_clause = ""
     params = {"top_n": top_n}
     if sklads and not groups:
@@ -952,7 +952,7 @@ def update_alyans_table(selected_sklads, selected_groups, top_n):
     if groups:
         params["groups"] = groups
 
-    # CTE с LAG — считаем положительные diffs как продажи
+    # where
     where_parts = ["1=1"]
     if sklads:
         where_parts.append("склад = ANY(:sklads)")
@@ -962,30 +962,53 @@ def update_alyans_table(selected_sklads, selected_groups, top_n):
         where_parts.append("дата >= :start_date")
     where_clause = " AND ".join(where_parts)
 
-    window_sql = f"""
-    WITH diffs AS (
-        SELECT
-            дата,
-            склад,
-            артикул_товар,
-            наименование,
-            (LAG(остаток) OVER (PARTITION BY склад, артикул_товар ORDER BY дата) - остаток) AS delta
-        FROM alyans_data
-        WHERE {where_clause}
-    )
-    SELECT артикул_товар, наименование, склад, SUM(GREATEST(delta, 0)) AS продано
-    FROM diffs
-    GROUP BY артикул_товар, наименование, склад
-    ORDER BY продано DESC
-    LIMIT :top_n;
-    """
+    # Решение: если выбрано >1 склад — агрегируем по артикулам (Суммарно).
+    aggregate_across_sklads = bool(sklads and len(sklads) > 1)
+
+    if aggregate_across_sklads:
+        # агрегируем продажи по всем выбранным складам
+        window_sql = f"""
+        WITH diffs AS (
+            SELECT
+                дата,
+                склад,
+                артикул_товар,
+                наименование,
+                (LAG(остаток) OVER (PARTITION BY склад, артикул_товар ORDER BY дата) - остаток) AS delta
+            FROM alyans_data
+            WHERE {where_clause}
+        )
+        SELECT артикул_товар, наименование, SUM(GREATEST(delta, 0)) AS продано
+        FROM diffs
+        GROUP BY артикул_товар, наименование
+        ORDER BY продано DESC
+        LIMIT :top_n;
+        """
+    else:
+        # стандартный вариант — группируем по складу
+        window_sql = f"""
+        WITH diffs AS (
+            SELECT
+                дата,
+                склад,
+                артикул_товар,
+                наименование,
+                (LAG(остаток) OVER (PARTITION BY склад, артикул_товар ORDER BY дата) - остаток) AS delta
+            FROM alyans_data
+            WHERE {where_clause}
+        )
+        SELECT артикул_товар, наименование, склад, SUM(GREATEST(delta, 0)) AS продано
+        FROM diffs
+        GROUP BY артикул_товар, наименование, склад
+        ORDER BY продано DESC
+        LIMIT :top_n;
+        """
 
     try:
         with engine.connect() as conn:
             df = pd.read_sql(text(window_sql), conn, params=params)
     except Exception as e:
-        logger.exception("[update_alyans_table] Ошибка оконного запроса, возвращаю пустую таблицу. Причина:")
-        # Не пытаемся делать тяжёлый fallback — для демонстрации вернём понятный результат
+        logger.exception("[update_alyans_table] Ошибка запроса:")
         title = f"ТОП-{top_n} товаров (Альянс) — ошибка запроса (см. логи)"
         return [], [], title
 
@@ -993,17 +1016,21 @@ def update_alyans_table(selected_sklads, selected_groups, top_n):
         title = f"ТОП-{top_n} товаров (Альянс) — нет данных"
         return [], [], title
 
-    # Переименуем колонки для DataTable
+    if aggregate_across_sklads:
+        # добавим колонку Склад = "Суммарно"
+        df["Склад"] = "Суммарно"
+    else:
+        # переименуем оригинальную колонку
+        df = df.rename(columns={"склад": "Склад"})
+
     df = df.rename(columns={
         "артикул_товар": "Артикул",
         "наименование": "Наименование",
-        "склад": "Склад",
         "продано": "Продано"
     })
 
     records = df.to_dict("records")
     title = f"ТОП-{top_n} товаров по продажам (Альянс)"
-    # Сброс выделения — проще и надёжнее
     return records, [], title
 
 
@@ -1012,58 +1039,66 @@ def update_alyans_table(selected_sklads, selected_groups, top_n):
     Output("alyans-graph", "figure"),
     Input("alyans-table", "data"),
     Input("alyans-table", "selected_rows"),
+    Input("alyans-sklad", "value"),  # чтобы знать выбранные склады для агрегации
 )
-def update_alyans_graph(table_data, selected_rows):
+def update_alyans_graph(table_data, selected_rows, selected_sklads):
     logger = logging.getLogger("update_alyans_graph")
     if not table_data or not selected_rows:
-        return go.Figure(layout=go.Layout(
-            title="Выберите товар в таблице ТОП"
-        ))
+        return go.Figure(layout=go.Layout(title="Выберите товар в таблице ТОП"))
 
     try:
         sel = table_data[selected_rows[0]]
-        sklad = sel.get("Склад")
         artikul = sel.get("Артикул")
+        sklad_in_row = sel.get("Склад", None)  # может быть "Суммарно" или конкретный склад
         name = sel.get("Наименование", "")
 
-        if not sklad or not artikul:
-            return go.Figure(layout=go.Layout(title="Неверный выбор строки"))
+        sklads = _ensure_list(selected_sklads)
 
-        # Берём все строки по артикулу+складу — обычно это небольшая выборка
-        sql = """
-            SELECT дата, остаток, цена
-            FROM alyans_data
-            WHERE склад = :sklad AND артикул_товар = :artikul
-            ORDER BY дата ASC;
-        """
-        params = {"sklad": sklad, "artikul": artikul}
+        # если строка агрегированная (Суммарно) или в фильтре выбрано >1 склад — агрегация по складам
+        need_aggregate = (sklad_in_row == "Суммарно") or (sklads and len(sklads) > 1)
+
+        # SQL: берем все строки по артикула (и по выбранным складам, если есть),
+        # затем агрегируем по дате в pandas — это проще и надёжнее.
+        sql = "SELECT дата, склад, остаток, цена FROM alyans_data WHERE артикул_товар = :artikul"
+        params = {"artikul": str(artikul)}
+        if need_aggregate and sklads:
+            sql += " AND склад = ANY(:sklads)"
+            params["sklads"] = sklads
+        sql += " ORDER BY дата ASC;"
+
         with engine.connect() as conn:
             df = pd.read_sql(text(sql), conn, params=params)
 
         if df is None or df.empty:
             return go.Figure(layout=go.Layout(title="Нет данных по выбранному товару"))
 
-        # Приведения и расчёты в pandas — быстро (несколько десятков/сотен строк)
+        # приведения
         df["дата"] = pd.to_datetime(df["дата"])
         df["остаток"] = pd.to_numeric(df["остаток"], errors="coerce").fillna(0)
-        # исправляем цену — удаляем $ если есть и преобразуем
-        if "цена" in df.columns:
-            df["цена"] = pd.to_numeric(df["цена"].astype(str).replace(r"[\$,]", "", regex=True), errors="coerce").fillna(0)
-        else:
-            df["цена"] = 0
 
-        df = df.sort_values("дата").reset_index(drop=True)
+        # Если агрегируем — суммируем остатки по дате (суммарный остаток по всем складам в день)
+        if need_aggregate:
+            # агрегируем по дате: суммарный остаток, средняя цена
+            df = df.groupby("дата", as_index=False).agg({
+                "остаток": "sum",
+                "цена": lambda x: pd.to_numeric(x.astype(str).str.replace(r"[\$,]", "", regex=True), errors="coerce").mean()
+            }).sort_values("дата").reset_index(drop=True)
+        else:
+            # для одного склада всё равно агрегируем по дате (на случай дублей)
+            df = df.groupby("дата", as_index=False).agg({
+                "остаток": "sum",
+                "цена": lambda x: pd.to_numeric(x.astype(str).str.replace(r"[\$,]", "", regex=True), errors="coerce").mean()
+            }).sort_values("дата").reset_index(drop=True)
+
         df["Продано"] = (df["остаток"].shift(1) - df["остаток"]).clip(lower=0).fillna(0)
         df["Пополнено"] = (df["остаток"] - df["остаток"].shift(1)).clip(lower=0).fillna(0)
 
-        # Строим линейный граф по остаткам; точки размечаем по Продано/Пополнено на hover
         fig = go.Figure()
-
         fig.add_trace(go.Scatter(
             x=df["дата"],
             y=df["остаток"],
             mode="lines+markers",
-            name=f"Остаток ({sklad})",
+            name=f"Остаток ({'Суммарно' if need_aggregate else sklads[0] if sklads else ''})",
             marker=dict(size=6),
             customdata=df[["Продано", "Пополнено", "цена"]].values,
             hovertemplate=(
@@ -1085,9 +1120,10 @@ def update_alyans_graph(table_data, selected_rows):
         )
         return fig
 
-    except Exception as e:
+    except Exception:
         logger.exception("[update_alyans_graph] Ошибка получения данных")
         return go.Figure(layout=go.Layout(title="Ошибка при получении данных (см. логи)"))
+
 
 
 # --- Утилиты ---
