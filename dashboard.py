@@ -926,7 +926,7 @@ def load_filters(active_tab):
     Output("alyans-top-title", "children"),
     Input("alyans-sklad", "value"),
     Input("alyans-group", "value"),
-    Input("project-filter", "value"),  # 🔹 новый фильтр
+    Input("project-filter", "value"),  # 🔹 фильтр по проекту
     Input("alyans-top-size", "value"),
 )
 def update_alyans_table(selected_sklads, selected_groups, selected_project, top_n):
@@ -940,22 +940,22 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
-    # --- 🔹 Фильтрация по проекту ---
+    # --- 🔹 Проектные группы (KOREA и др.) ---
     korea_groups = [
-        "ПРОЕКТ ЭЛЕКТРИКА\СТАРТВОЛЬТ-ИНОМАРКИ",
-        "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\MANDO-ЛЕГКОВОЙ ОБЩАЯ\MANDO-КОНТРОЛЬ",
-        "ПРОЕКТ CHINA\CHINA-РТИ ОБЩАЯ\CHINA-ПРОКЛАДКИ СИЛ",
-        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\SAMPA",
-        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
-        "ПРОЕКТ АВТОКОМПОНЕНТЫ\PSP",
-        "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\BOSCH ОБЩАЯ\BOSCH ИНОМАРКИ ГРУЗ",
-        "ПРОЕКТ РОЗНИЦА\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\ECO-ИНОМАРКИ",
-        "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\MOBIS KOREA-ГРУЗОВОЙ",
-        "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\MR-РК ТОРМ.НАКЛАДКИ",
-        "ПРОЕКТ ЭЛЕКТРИКА\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
+        "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
+        "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
+        "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
+        "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
+        "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
+        "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
+        "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
     ]
 
-    # Требуем хотя бы один фильтр
+    # --- проверка, выбрано ли что-то ---
     if not sklads and not groups and not selected_project:
         title = "Выберите склад, группу или проект (чтобы показать ТОП)"
         return [], [], title
@@ -975,11 +975,17 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
 
     # --- 🔹 фильтр по проекту ---
     if selected_project == "korea":
-        where_parts.append("группа = ANY(:korea_groups)")
-        params["korea_groups"] = korea_groups
+        # ищем все строки, где поле "группа" содержит указанные подстроки
+        like_parts = []
+        for i, grp in enumerate(korea_groups):
+            key = f"pat{i}"
+            like_parts.append(f"группа ILIKE :{key}")
+            params[key] = f"%{grp}%"
+        where_parts.append("(" + " OR ".join(like_parts) + ")")
+
     elif selected_project == "china":
-        # пока без фильтрации, просто заглушка
-        pass
+        # временная заглушка, пока не определён список групп
+        where_parts.append("группа ILIKE '%CHINA%'")
 
     # --- ограничение по дате (если выбран только склад) ---
     if sklads and not groups and not selected_project:
@@ -989,10 +995,11 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
 
     where_clause = " AND ".join(where_parts)
 
-    # --- решаем, нужно ли агрегировать по складам ---
+    # --- нужно ли агрегировать по складам ---
     aggregate_across_sklads = bool(sklads and len(sklads) > 1)
 
     if aggregate_across_sklads:
+        # агрегируем продажи по всем выбранным складам
         window_sql = f"""
         WITH diffs AS (
             SELECT
@@ -1011,6 +1018,7 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
         LIMIT :top_n;
         """
     else:
+        # обычный случай — по складу
         window_sql = f"""
         WITH diffs AS (
             SELECT
@@ -1029,6 +1037,7 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
         LIMIT :top_n;
         """
 
+    # --- выполнение запроса ---
     try:
         with engine.connect() as conn:
             df = pd.read_sql(text(window_sql), conn, params=params)
@@ -1041,6 +1050,7 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
         title = f"ТОП-{top_n} товаров (Альянс) — нет данных"
         return [], [], title
 
+    # --- финальная обработка ---
     if aggregate_across_sklads:
         df["Склад"] = "Суммарно"
     else:
@@ -1083,17 +1093,17 @@ def update_alyans_graph(table_data, selected_rows, selected_project):
         if selected_project == "korea":
             where_parts.append("группа = ANY(:korea_groups)")
             params["korea_groups"] = [
-                "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
-                "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
-                "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
-                "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
-                "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
-                "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
-                "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
-                "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
-                "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
-                "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
-                "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
+                "ПРОЕКТ ЭЛЕКТРИКА\СТАРТВОЛЬТ-ИНОМАРКИ",
+                "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
+                "ПРОЕКТ CHINA\CHINA-РТИ ОБЩАЯ\CHINA-ПРОКЛАДКИ СИЛ",
+                "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\SAMPA",
+                "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
+                "ПРОЕКТ АВТОКОМПОНЕНТЫ\PSP",
+                "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\BOSCH ОБЩАЯ\BOSCH ИНОМАРКИ ГРУЗ",
+                "ПРОЕКТ РОЗНИЦА\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
+                "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
+                "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\MR-РК ТОРМ.НАКЛАДКИ",
+                "ПРОЕКТ ЭЛЕКТРИКА\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
             ]
 
         where_clause = " AND ".join(where_parts)
