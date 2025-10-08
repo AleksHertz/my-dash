@@ -97,22 +97,22 @@ def get_latest_upload_date():
     if not files:
         return "нет данных"
 
-    latest_file = max(files, key=os.path.getmtime)
-    try:
-        filename = os.path.basename(latest_file)
+    latest_date = None
+    for f in files:
+        filename = os.path.basename(f)
         # пример: new_uploads_2025-10-02_14-46.csv
-        date_part = filename.split("_")[2]  # '2025-10-02'
-        dt = datetime.strptime(date_part, "%Y-%m-%d")
-        return dt.strftime("%d.%m.%Y")
-    except Exception:
+        try:
+            date_part = filename.split("_")[2]  # '2025-10-02'
+            dt = datetime.strptime(date_part, "%Y-%m-%d")
+            if latest_date is None or dt > latest_date:
+                latest_date = dt
+        except Exception:
+            continue
+
+    if latest_date:
+        return latest_date.strftime("%d.%m.%Y")
+    else:
         return "неизвестно"
-        
-def _ensure_list(v):
-    if v is None:
-        return None
-    if isinstance(v, (list, tuple)):
-        return list(v)
-    return [v]
 
 
 def get_unique_sklads():
