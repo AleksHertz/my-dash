@@ -659,9 +659,9 @@ app.layout = html.Div([
                     html.Label("Артикул:"),
                     dcc.Dropdown(
                         id='article-2025-filter',
-                        multi=False,
+                        options=[],
                         placeholder="Введите или выберите артикул",
-                        clearable=True,
+                        debounce=True,
                         style={'marginBottom': '15px'}
                     ),
                     html.Div(
@@ -1174,8 +1174,8 @@ def upload_new_csv_to_github(csv_path: str):
     Input("month-2025-filter", "value")
 )
 def update_line_graph(selected_article, selected_nom, selected_sklads, selected_month):
-    # --- Проверка: хотя бы одно поле товара должно быть выбрано ---
-    if not selected_article and not selected_nom:
+    # Если товар не выбран
+    if not selected_article or not selected_nom:
         return go.Figure(
             layout=go.Layout(
                 title="Выберите товар из таблицы ТОП-100 для отображения графика",
@@ -1186,27 +1186,21 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
 
     dff = df_2025_clean.copy()
 
-    # --- Приводим типы к строкам, чтобы избежать numpy.int64 конфликтов ---
-    dff["Артикул_товар"] = dff["Артикул_товар"].astype(str)
-    dff["Номенклатура_канон"] = dff["Номенклатура_канон"].astype(str)
-
-    if selected_article:
-        dff = dff[dff["Артикул_товар"] == str(selected_article)]
-    if selected_nom:
-        dff = dff[dff["Номенклатура_канон"] == str(selected_nom)]
-
-    # --- Фильтр по складу ---
+    # --- Фильтр по складам ---
     if selected_sklads:
         dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
 
+    # --- Гибкий фильтр по артикулу (игнорируем тире, регистр) ---
+    dff = dff[dff["Артикул_товар"].astype(str)
+              .str.replace("-", "")
+              .str.contains(str(selected_article).replace("-", ""), case=False, na=False)]
+
+    # --- Фильтр по номенклатуре ---
+    dff = dff[dff["Номенклатура_канон"] == selected_nom]
+
     # --- Фильтр по месяцу ---
     if selected_month:
-        if not pd.api.types.is_datetime64_any_dtype(dff["Дата"]):
-            dff["Дата"] = pd.to_datetime(dff["Дата"], errors="coerce")
-        try:
-            dff = dff[dff["Дата"].dt.month == int(selected_month)]
-        except Exception:
-            pass
+        dff = dff[dff["Дата"].dt.month == selected_month]
 
     if dff.empty:
         return go.Figure(
@@ -1217,36 +1211,27 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
             )
         )
 
-    # --- Формирование графика ---
+    # --- Построение графика ---
     fig = go.Figure()
+
     for sklad in dff["Склад"].unique():
         df_s = dff[dff["Склад"] == sklad].sort_values("Дата").copy()
 
-        # --- Обработка числовых колонок ---
-        df_s["Остаток"] = pd.to_numeric(df_s["Остаток"], errors="coerce").fillna(0)
-        df_s["Цена"] = pd.to_numeric(
-            df_s["Цена"].astype(str).str.replace(r"[^\d.,-]", "", regex=True).str.replace(",", "."),
-            errors="coerce"
-        ).fillna(0)
-
-        # --- Расчёты ---
         df_s["Продано_fix"] = (df_s["Остаток"].shift(1) - df_s["Остаток"]).clip(lower=0).fillna(0)
         df_s["Пополнено_fix"] = (df_s["Остаток"] - df_s["Остаток"].shift(1)).clip(lower=0).fillna(0)
         df_s["Среднее_Продано"] = df_s["Продано_fix"].rolling(7, min_periods=1).mean()
+
         df_s["Всплеск"] = df_s["Продано_fix"] > 1.5 * df_s["Среднее_Продано"]
         df_s["Цена_изменилась"] = df_s["Цена"].diff().fillna(0) != 0
 
-        # --- Цвета точек ---
         df_s["Цвет"] = df_s.apply(
             lambda row: "purple" if row["Всплеск"] and row["Цена_изменилась"]
             else "red" if row["Всплеск"]
             else "green" if row["Цена_изменилась"]
-            else "blue",
-            axis=1
+            else "blue", axis=1
         )
         df_s["Размер"] = df_s["Всплеск"].apply(lambda x: 10 if x else 5)
 
-        # --- Добавляем серию ---
         fig.add_trace(go.Scatter(
             x=df_s["Дата"],
             y=df_s["Остаток"],
@@ -1256,7 +1241,8 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
             text=[sklad] * len(df_s),
             customdata=df_s[[
                 "Продано_fix", "Пополнено_fix", "Цена",
-                "Артикул_товар", "Номенклатура_канон", "Всплеск", "Цена_изменилась"
+                "Артикул_товар", "Номенклатура_канон",
+                "Всплеск", "Цена_изменилась"
             ]].values,
             hovertemplate=(
                 "<b>Склад:</b> %{text}<br>"
@@ -1287,14 +1273,13 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
         ))
 
     fig.update_layout(
-        title=f"Динамика остатков, продаж и цен (2025)",
+        title="Динамика остатков, продаж и цен (2025)",
         xaxis_title="Дата",
         yaxis_title="Остаток",
         hovermode="closest",
-        legend=dict(orientation="h", y=-0.2),
-        template="plotly_white",
-        height=520
+        legend=dict(orientation="h", y=-0.2)
     )
+
     return fig
 
 # ------------------- Таблица топ-100 -------------------
@@ -1376,89 +1361,34 @@ for a, norm in ALL_ARTICLES_NORM.items():
 # -------------------
 # callback: динамические options для article-2025-filter
 # -------------------
+# --- Автоподбор артикулов по введённому тексту ---
 @app.callback(
     Output("article-2025-filter", "options"),
-    Input("article-2025-filter", "search_value"),
-    Input("top-100-table", "selected_rows"),
-    State("top-100-table", "data"),
-    State("article-2025-filter", "value"),
+    Input("article-2025-filter", "search_value")
 )
-def update_article_options(search_value, selected_rows, table_data, current_value):
+def update_article_options(search_value):
     """
-    Возвращает список options для article-2025-filter в зависимости от ввода.
-    - Если пользователь выбирает строку в таблице — подставляем этот артикул в options (быстро видно).
-    - При пустом вводе — показываем первые 50 артикулов (и текущий value, если он есть).
-    - При вводе — ищем по нормализованным цифрам и по подстроке в оригинале.
-    - Если нет прямых совпадений — ищем близкие нормализованные варианты (difflib).
-    - Если совсем нет совпадений — возвращаем option "Использовать '...'" с value=введённой строкой.
+    Обновляет список доступных артикулов в выпадающем меню по мере ввода текста.
+    Если ничего не введено — показывает первые 100 уникальных артикулов.
     """
-    # 1) если выбор из таблицы — гарантируем, что выбранный артикул попадает в options первым
-    if selected_rows and table_data:
-        try:
-            row = table_data[selected_rows[0]]
-            art = row.get("Артикул")
-            if art:
-                # вернём только пару: выбранный, + пару популярных
-                opts = [{"label": art, "value": art}]
-                # дополняем списком популярных (без дубликата)
-                for a in ALL_ARTICLES_2025:
-                    if a == art:
-                        continue
-                    opts.append({"label": a, "value": a})
-                    if len(opts) >= 50:
-                        break
-                return opts
-        except Exception:
-            pass
+    all_articles = df_2025_clean["Артикул_товар"].astype(str).unique().tolist()
 
-    # 2) пустой ввод — первые 50, плюс current_value если есть и не входит в топ50
     if not search_value:
-        opts = []
-        if current_value:
-            opts.append({"label": current_value, "value": current_value})
-        for a in ALL_ARTICLES_2025[:50]:
-            if a != current_value:
-                opts.append({"label": a, "value": a})
-        return opts
+        # Если ничего не введено — показываем первые 100 артикулов
+        subset = all_articles[:100]
+    else:
+        # Простое частичное совпадение (без тире)
+        normalized_search = search_value.replace("-", "").lower()
+        subset = [
+            a for a in all_articles
+            if normalized_search in a.replace("-", "").lower()
+        ]
 
-    # 3) есть ввод — ищем
-    s = str(search_value).strip()
-    norm_s = re.sub(r"\D", "", s)
+        # Если ничего не найдено — показываем первые 20 артикулов, чтобы не было "No results"
+        if not subset:
+            subset = all_articles[:20]
 
-    matches = []
-    # сначала прямые совпадения: нормализованные содержат norm_s или подстрока в оригинале
-    if norm_s:
-        for a, norm in ALL_ARTICLES_NORM.items():
-            if norm_s in norm:
-                matches.append(a)
-    # подстрока в оригинале (без нормализации)
-    if len(matches) < 50:
-        low = s.lower()
-        for a in ALL_ARTICLES_2025:
-            if low in a.lower() and a not in matches:
-                matches.append(a)
-    # если ничего не найдено, попробуем близкие по цифрам
-    if not matches and len(norm_s) >= 3:
-        close = get_close_matches(norm_s, list(NORM_TO_ARTS.keys()), n=8, cutoff=0.6)
-        for cn in close:
-            for a in NORM_TO_ARTS.get(cn, []):
-                if a not in matches:
-                    matches.append(a)
-
-    matches = matches[:50]
-
-    if not matches:
-        # позволяем пользователю использовать введённую строку как вариант (чтобы не блокировать ввод)
-        return [{"label": f"Использовать '{s}' (нет точных совпадений)", "value": s}]
-
-    # вставим текущий value наверх, если он есть и пока не входит в matches
-    opts = []
-    if current_value and current_value not in matches:
-        opts.append({"label": current_value, "value": current_value})
-
-    opts.extend([{"label": a, "value": a} for a in matches])
-    return opts
-
+    return [{"label": a, "value": a} for a in subset]
 
 
 
