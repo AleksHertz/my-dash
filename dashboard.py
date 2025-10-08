@@ -793,12 +793,14 @@ app.layout = html.Div([
 
                 html.Label("Проект:"),
                 dcc.Dropdown(
-                    id="alyans-project",
+                    id="project-filter",
                     options=[
+                        {"label": "Все проекты", "value": None},
                         {"label": "Корея", "value": "Корея"},
                         {"label": "Китай", "value": "Китай"},
                     ],
                     multi=False,
+                    clearable=True,
                     placeholder="Выберите проект",
                     style={"marginBottom": "15px"}
                 ),
