@@ -91,14 +91,17 @@ engine = create_engine(DB_URL, pool_pre_ping=True)
 
 def get_latest_upload_date():
     """Возвращает дату последнего загруженного файла в формате ДД.ММ.ГГГГ"""
-    files = glob.glob("new_uploads_*.csv")
+    upload_dir = os.path.join("data", "new_uploads")
+    pattern = os.path.join(upload_dir, "new_uploads_*.csv")
+    files = glob.glob(pattern)
     if not files:
         return "нет данных"
 
     latest_file = max(files, key=os.path.getmtime)
     try:
-        # пример имени: new_uploads_2025-10-02_14-46.csv
-        date_part = latest_file.split("_")[2]  # '2025-10-02'
+        filename = os.path.basename(latest_file)
+        # пример: new_uploads_2025-10-02_14-46.csv
+        date_part = filename.split("_")[2]  # '2025-10-02'
         dt = datetime.strptime(date_part, "%Y-%m-%d")
         return dt.strftime("%d.%m.%Y")
     except Exception:
