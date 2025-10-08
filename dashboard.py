@@ -661,7 +661,8 @@ app.layout = html.Div([
                         id='article-2025-filter',
                         options=[],
                         placeholder="Введите или выберите артикул",
-                        debounce=True,
+                        searchable=True,
+                        clearable=True,
                         style={'marginBottom': '15px'}
                     ),
                     html.Div(
@@ -1368,28 +1369,26 @@ for a, norm in ALL_ARTICLES_NORM.items():
 )
 def update_article_options(search_value):
     """
-    Обновляет список доступных артикулов в выпадающем меню по мере ввода текста.
-    Если ничего не введено — показывает первые 100 уникальных артикулов.
+    Подбирает артикулы при вводе текста в фильтр.
+    Работает быстро даже при большом числе позиций.
     """
     all_articles = df_2025_clean["Артикул_товар"].astype(str).unique().tolist()
 
     if not search_value:
-        # Если ничего не введено — показываем первые 100 артикулов
+        # показываем первые 100 при пустом вводе
         subset = all_articles[:100]
     else:
-        # Простое частичное совпадение (без тире)
+        # частичное совпадение без учёта тире
         normalized_search = search_value.replace("-", "").lower()
         subset = [
             a for a in all_articles
             if normalized_search in a.replace("-", "").lower()
         ]
-
-        # Если ничего не найдено — показываем первые 20 артикулов, чтобы не было "No results"
+        # если ничего не найдено, показываем несколько вариантов, чтобы избежать "No results"
         if not subset:
             subset = all_articles[:20]
 
     return [{"label": a, "value": a} for a in subset]
-
 
 
 
