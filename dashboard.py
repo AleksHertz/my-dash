@@ -136,8 +136,7 @@ def get_latest_upload_date():
         return "неизвестно"
 
 
-# --- Получение уникальных значений ---
-# ---- вспомогательные получения уникальных значений для фильтров ----
+# ---------- Фильтры ----------
 def get_unique_sklads():
     try:
         sql = text("SELECT DISTINCT склад FROM alyans_refresh_v3 WHERE склад IS NOT NULL ORDER BY склад;")
@@ -160,65 +159,48 @@ def get_unique_groups():
         return []
 
 
-# ---- получение ТОП товаров (агрегируем в БД) ----
+# ---------- ТОП товаров ----------
 def get_top_products(top_n=100, sklads=None, groups=None, project=None):
-    """
-    Возвращает DataFrame с колонками:
-    (если aggregate==False) ['склад','товар_id','артикул','наименование','всего_продано','всего_пополнено']
-    (если aggregate==True) ['товар_id','артикул','наименование','всего_продано','всего_пополнено']
-    """
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
+
     params = {"top_n": int(top_n)}
+    where = ["1=1"]
 
-    where_parts = ["1=1"]
-
-    # фильтр по складам
     if sklads:
-        # передаём кортеж (psycopg2 поддерживает)
-        params["sklads"] = tuple(sklads)
-        where_parts.append("склад = ANY(:sklads)")
+        params["sklads"] = sklads
+        where.append("склад = ANY(:sklads)")
 
-    # фильтр по группам (точные значения)
     if groups:
-        params["groups"] = tuple(groups)
-        where_parts.append("группа = ANY(:groups)")
+        params["groups"] = groups
+        where.append("группа = ANY(:groups)")
 
-    # проектный фильтр (KOREA и т.д.) — использую список шаблонов
-    if project == "korea":
-        like_parts = []
-        for i, grp in enumerate(korea_groups):
-            param_name = f"pat{i}"
-            like_parts.append(f"группа ILIKE :{param_name}")
-            params[param_name] = f"%{grp}%"
-        if like_parts:
-            where_parts.append("(" + " OR ".join(like_parts) + ")")
-    elif project == "china":
-        # простой общий матч по CHINA
-        where_parts.append("группа ILIKE :china")
+    if project == "Корея":
+        parts = []
+        for i, g in enumerate(korea_groups):
+            pname = f"p{i}"
+            params[pname] = f"%{g}%"
+            parts.append(f"группа ILIKE :{pname}")
+        where.append("(" + " OR ".join(parts) + ")")
+    elif project == "Китай":
+        where.append("группа ILIKE :china")
         params["china"] = "%CHINA%"
 
-    # если выбрана только склад (и нет групп/проекта) — ограничим последние 180 дней
     if sklads and not groups and not project:
-        start_date = (datetime.utcnow().date() - timedelta(days=180))
-        where_parts.append("дата >= :start_date")
-        params["start_date"] = start_date
+        params["start_date"] = (datetime.utcnow().date() - timedelta(days=180))
+        where.append("дата >= :start_date")
 
-    where_clause = " AND ".join(where_parts)
+    where_clause = " AND ".join(where)
 
-    # агрегировать или нет по складам (если выбран >1 склад — часто удобнее агрегировать)
-    aggregate_across_sklads = bool(sklads and len(sklads) > 1)
+    aggregate = len(sklads) > 1
 
     try:
         with engine.connect() as conn:
-            if aggregate_across_sklads:
+            if aggregate:
                 sql = f"""
-                    SELECT
-                      товар_id,
-                      артикул,
-                      наименование,
-                      SUM(продано) AS всего_продано,
-                      SUM(пополнение) AS всего_пополнено
+                    SELECT товар_id, артикул, наименование,
+                           SUM(продано) AS всего_продано,
+                           SUM(пополнение) AS всего_пополнено
                     FROM alyans_refresh_v3
                     WHERE {where_clause}
                     GROUP BY товар_id, артикул, наименование
@@ -228,13 +210,9 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
                 """
             else:
                 sql = f"""
-                    SELECT
-                      склад,
-                      товар_id,
-                      артикул,
-                      наименование,
-                      SUM(продано) AS всего_продано,
-                      SUM(пополнение) AS всего_пополнено
+                    SELECT склад, товар_id, артикул, наименование,
+                           SUM(продано) AS всего_продано,
+                           SUM(пополнение) AS всего_пополнено
                     FROM alyans_refresh_v3
                     WHERE {where_clause}
                     GROUP BY склад, товар_id, артикул, наименование
@@ -243,79 +221,55 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
                     LIMIT :top_n;
                 """
 
-            res = conn.execute(text(sql), **params)
-            rows = res.fetchall()
-            cols = res.keys()
-            df = pd.DataFrame(rows, columns=cols)
+            res = conn.execute(text(sql), params)
+            df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
-        # безопасные типы
-        if not df.empty:
-            df["всего_продано"] = pd.to_numeric(df["всего_продано"], errors="coerce").fillna(0).astype(int)
-            df["всего_пополнено"] = pd.to_numeric(df["всего_пополнено"], errors="coerce").fillna(0).astype(int)
+        if df.empty:
+            return df
 
+        df["всего_продано"] = pd.to_numeric(df["всего_продано"], errors="coerce").fillna(0).astype(int)
+        df["всего_пополнено"] = pd.to_numeric(df["всего_пополнено"], errors="coerce").fillna(0).astype(int)
         return df
 
     except Exception:
         logger.exception("[get_top_products] Ошибка получения ТОП")
-        return pd.DataFrame(columns=["склад", "товар_id", "артикул", "наименование", "всего_продано", "всего_пополнено"])
+        return pd.DataFrame()
 
 
-# ---- временной ряд по товару ----
-def get_product_timeseries(tovar_id=None, sklads=None, from_date=None, to_date=None):
-    """
-    Возвращает DataFrame с колонками:
-    дата, склад, товар_id, артикул, наименование, остаток, продано, пополнение, цена
-    """
+# ---------- Временной ряд ----------
+def get_product_timeseries(tovar_id=None, sklads=None):
     if not tovar_id:
         return pd.DataFrame()
 
     sklads = _ensure_list(sklads)
     params = {"tovar_id": str(tovar_id)}
-
-    where_parts = ["товар_id = :tovar_id"]
+    where = ["товар_id = :tovar_id"]
 
     if sklads:
-        params["sklads"] = tuple(sklads)
-        where_parts.append("склад = ANY(:sklads)")
-
-    if from_date:
-        params["from_date"] = pd.to_datetime(from_date).date()
-        where_parts.append("дата >= :from_date")
-    if to_date:
-        params["to_date"] = pd.to_datetime(to_date).date()
-        where_parts.append("дата <= :to_date")
-
-    where_clause = " AND ".join(where_parts)
+        params["sklads"] = sklads
+        where.append("склад = ANY(:sklads)")
 
     sql = f"""
         SELECT дата, склад, товар_id, артикул, наименование, остаток, продано, пополнение, цена
         FROM alyans_refresh_v3
-        WHERE {where_clause}
-        ORDER BY дата ASC, склад;
+        WHERE {' AND '.join(where)}
+        ORDER BY дата ASC;
     """
 
     try:
         with engine.connect() as conn:
-            res = conn.execute(text(sql), **params)
-            rows = res.fetchall()
-            cols = res.keys()
-            df = pd.DataFrame(rows, columns=cols)
+            res = conn.execute(text(sql), params)
+            df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
         if df.empty:
             return df
 
-        # типы
         df["дата"] = pd.to_datetime(df["дата"])
-        df["остаток"] = pd.to_numeric(df["остаток"], errors="coerce").fillna(0)
-        df["продано"] = pd.to_numeric(df["продано"], errors="coerce").fillna(0)
-        df["пополнение"] = pd.to_numeric(df["пополнение"], errors="coerce").fillna(0)
-        if "цена" in df.columns:
-            df["цена"] = pd.to_numeric(df["цена"], errors="coerce").fillna(0)
-
+        for col in ["остаток", "продано", "пополнение", "цена"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
         return df
-
     except Exception:
-        logger.exception("[get_product_timeseries] Ошибка получения ряда")
+        logger.exception("[get_product_timeseries] Ошибка ряда")
         return pd.DataFrame()
 
 
@@ -987,7 +941,7 @@ def load_filters(active_tab):
     ]
 
 
-# ---- Dash callback: обновление таблицы ТОП ----
+# ---------- Колбэки ----------
 @app.callback(
     Output("alyans-table", "data"),
     Output("alyans-table", "selected_rows"),
@@ -998,98 +952,71 @@ def load_filters(active_tab):
     Input("alyans-top-size", "value"),
 )
 def update_alyans_table(selected_sklads, selected_groups, selected_project, top_n):
-    try:
-        top_n = int(top_n or 50)
-    except Exception:
-        top_n = 50
-
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
 
-    # если ничего не выбрано — просим выбрать
     if not sklads and not groups and not selected_project:
-        title = "Выберите склад/группу/проект для отображения ТОП"
-        return [], [], title
+        return [], [], "Выберите склад, группу или проект"
 
-    df = get_top_products(top_n=top_n, sklads=sklads, groups=groups, project=selected_project)
-
+    df = get_top_products(top_n=top_n or 100, sklads=sklads, groups=groups, project=selected_project)
     if df.empty:
-        title = f"ТОП-{top_n} — нет данных"
-        return [], [], title
+        return [], [], f"ТОП-{top_n}: нет данных"
 
-    # приведение к нужному виду: всегда делаем столбец 'Склад' (если нет — добавим 'Суммарно')
     if "склад" not in df.columns:
         df["склад"] = "Суммарно"
 
     df = df.rename(columns={
-        "склад": "Склад",
-        "товар_id": "Товар ID",
         "артикул": "Артикул",
         "наименование": "Наименование",
         "всего_продано": "Продано",
-        "всего_пополнено": "Пополнено"
+        "склад": "Склад"
     })
 
-    records = df.to_dict("records")
-    title = f"ТОП-{top_n} товаров по продажам (Alyans)"
-    return records, [], title
+    df = df[["Артикул", "Наименование", "Продано", "Склад"]]
+    return df.to_dict("records"), [], f"ТОП-{top_n} товаров по продажам"
 
 
-# ---- Dash callback: график по выбранному товару ----
 @app.callback(
     Output("alyans-graph", "figure"),
     Input("alyans-table", "data"),
-    Input("alyans-table", "selected_rows"),
-    Input("project-filter", "value"),
+    Input("alyans-table", "selected_rows")
 )
-def update_alyans_graph(table_data, selected_rows, selected_project):
+def update_alyans_graph(table_data, selected_rows):
     if not table_data or not selected_rows:
-        return go.Figure(layout=go.Layout(title="Выберите товар в таблице ТОП"))
+        return go.Figure(layout=go.Layout(title="Выберите товар из таблицы"))
 
-    try:
-        sel = table_data[selected_rows[0]]
-        # ожидаем, что в таблице есть 'Товар ID'
-        tid = sel.get("Товар ID") or sel.get("товар_id") or sel.get("товар_id")
-        skl = sel.get("Склад")
-        if not tid:
-            return go.Figure(layout=go.Layout(title="Нет идентификатора товара"))
+    sel = table_data[selected_rows[0]]
+    art = sel.get("Артикул")
+    skl = sel.get("Склад")
 
-        # при проекте korea можно фильтровать по группам — но чаще достаточно склада/товар ID
-        sklads = [skl] if skl and skl != "Суммарно" else None
+    if not art:
+        return go.Figure(layout=go.Layout(title="Нет артикула"))
 
-        df = get_product_timeseries(tovar_id=tid, sklads=sklads)
+    df = get_product_timeseries(tovar_id=art, sklads=[skl] if skl != "Суммарно" else None)
+    if df.empty:
+        return go.Figure(layout=go.Layout(title="Нет данных по товару"))
 
-        if df.empty:
-            return go.Figure(layout=go.Layout(title="Нет данных по выбранному товару"))
+    agg = df.groupby("дата", as_index=False).agg({
+        "остаток": "sum",
+        "продано": "sum",
+        "пополнение": "sum"
+    })
 
-        # агрегируем по дате суммарно по складам (если есть несколько строк на дату)
-        agg = df.groupby("дата", as_index=False).agg({
-            "остаток": "sum",
-            "продано": "sum",
-            "пополнение": "sum",
-            "цена": "mean"
-        }).sort_values("дата")
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=agg["дата"], y=agg["продано"], name="Продано"))
+    fig.add_trace(go.Bar(x=agg["дата"], y=agg["пополнение"], name="Пополнено"))
+    fig.add_trace(go.Scatter(x=agg["дата"], y=agg["остаток"], mode="lines+markers", name="Остаток", yaxis="y2"))
 
-        # строим график: столбцы Продано/Пополнено и линия Остаток
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=agg["дата"], y=agg["продано"], name="Продано"))
-        fig.add_trace(go.Bar(x=agg["дата"], y=agg["пополнение"], name="Пополнено"))
-        fig.add_trace(go.Scatter(x=agg["дата"], y=agg["остаток"], mode="lines+markers", name="Остаток", yaxis="y2"))
-
-        fig.update_layout(
-            title=f"Динамика — {tid} {sel.get('Наименование','')}",
-            xaxis_title="Дата",
-            yaxis_title="Количество",
-            yaxis2=dict(title="Остаток", overlaying="y", side="right"),
-            barmode="group",
-            template="plotly_white",
-            height=520
-        )
-        return fig
-
-    except Exception:
-        logger.exception("[update_alyans_graph] Ошибка при построении графика")
-        return go.Figure(layout=go.Layout(title="Ошибка при построении графика"))
+    fig.update_layout(
+        title=f"Динамика продаж и остатков — {art}",
+        xaxis_title="Дата",
+        yaxis_title="Количество",
+        yaxis2=dict(title="Остаток", overlaying="y", side="right"),
+        barmode="group",
+        template="plotly_white",
+        height=520
+    )
+    return fig
 
 
 # --- Утилиты ---
