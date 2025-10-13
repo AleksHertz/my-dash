@@ -86,20 +86,6 @@ unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()
 DB_URL = "postgresql://postgres:SyngvjjliGqUBYDKibMmoOWCVUZVdFjc@tramway.proxy.rlwy.net:13502/railway"
 engine = create_engine(DB_URL, pool_pre_ping=True)
 
-# ---- 🔹 Проектные группы (KOREA и др.) ----
-korea_groups = [
-    "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
-    "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
-    "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
-    "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
-    "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
-    "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
-    "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
-    "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
-    "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
-    "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
-    "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
-]
 
 def _ensure_list(value):
     """Гарантирует, что значение является списком."""
@@ -161,37 +147,61 @@ def get_unique_groups():
 
 # ---------- ТОП товаров ----------
 def get_top_products(top_n=100, sklads=None, groups=None, project=None):
+    """
+    Возвращает ТОП товаров по продажам с фильтрами:
+    - Склад
+    - Группа
+    - Проект (Корея / Китай)
+    """
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
-
     params = {"top_n": int(top_n)}
     where = ["1=1"]
 
+    # --- 🔹 Фильтр по складам ---
     if sklads:
-        params["sklads"] = sklads
         where.append("склад = ANY(:sklads)")
+        params["sklads"] = sklads
 
+    # --- 🔹 Фильтр по группам ---
     if groups:
-        params["groups"] = groups
         where.append("группа = ANY(:groups)")
+        params["groups"] = groups
+
+    # --- 🔹 Проектные группы (KOREA и др.) ---
+    korea_groups = [
+        "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
+        "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
+        "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
+        "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
+        "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
+        "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
+        "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
+    ]
 
     if project == "Корея":
-        parts = []
+        # Используем ILIKE с OR для гибкости поиска
+        korea_clauses = []
         for i, g in enumerate(korea_groups):
-            pname = f"p{i}"
+            pname = f"pg_{i}"
             params[pname] = f"%{g}%"
-            parts.append(f"группа ILIKE :{pname}")
-        where.append("(" + " OR ".join(parts) + ")")
+            korea_clauses.append(f"группа ILIKE :{pname}")
+        where.append("(" + " OR ".join(korea_clauses) + ")")
     elif project == "Китай":
-        where.append("группа ILIKE :china")
-        params["china"] = "%CHINA%"
+        where.append("LOWER(группа) LIKE '%china%'")
 
+    # --- 🔹 Ограничение по дате (ускоряет работу при больших данных) ---
     if sklads and not groups and not project:
         params["start_date"] = (datetime.utcnow().date() - timedelta(days=180))
         where.append("дата >= :start_date")
 
     where_clause = " AND ".join(where)
 
+    # --- 🔹 Если выбрано несколько складов — суммируем ---
     aggregate = len(sklads) > 1
 
     try:
@@ -206,7 +216,7 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
                     GROUP BY товар_id, артикул, наименование
                     HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
-                    LIMIT :top_n;
+                    LIMIT :top_n
                 """
             else:
                 sql = f"""
@@ -218,42 +228,71 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
                     GROUP BY склад, товар_id, артикул, наименование
                     HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
-                    LIMIT :top_n;
+                    LIMIT :top_n
                 """
 
+            # ⚡ Выполняем с параметрами в виде словаря (SQLAlchemy-safe)
             res = conn.execute(text(sql), params)
             df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
         if df.empty:
             return df
 
+        # --- Приведение типов ---
         df["всего_продано"] = pd.to_numeric(df["всего_продано"], errors="coerce").fillna(0).astype(int)
         df["всего_пополнено"] = pd.to_numeric(df["всего_пополнено"], errors="coerce").fillna(0).astype(int)
+
         return df
 
     except Exception:
-        logger.exception("[get_top_products] Ошибка получения ТОП")
+        logger.exception("[get_top_products] Ошибка получения ТОП товаров")
         return pd.DataFrame()
 
-
 # ---------- Временной ряд ----------
-def get_product_timeseries(tovar_id=None, sklads=None):
+def get_product_timeseries(tovar_id=None, sklads=None, project=None):
+    """
+    Возвращает временной ряд по товару для графика.
+    Поддерживает фильтры по складу, проекту и артикулу/товар_id.
+    """
     if not tovar_id:
         return pd.DataFrame()
 
     sklads = _ensure_list(sklads)
     params = {"tovar_id": str(tovar_id)}
-    where = ["товар_id = :tovar_id"]
+    where = ["(товар_id = :tovar_id OR артикул = :tovar_id)"]
 
+    # --- 🔹 Фильтр по складам ---
     if sklads:
-        params["sklads"] = sklads
         where.append("склад = ANY(:sklads)")
+        params["sklads"] = sklads
+
+    # --- 🔹 Проектные группы ---
+    korea_groups = [
+        "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
+        "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
+        "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
+        "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
+        "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
+        "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
+        "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
+    ]
+
+    if project == "Корея":
+        where.append("группа = ANY(:korea_groups)")
+        params["korea_groups"] = korea_groups
+    elif project == "Китай":
+        where.append("LOWER(группа) LIKE '%china%'")
 
     sql = f"""
-        SELECT дата, склад, товар_id, артикул, наименование, остаток, продано, пополнение, цена
+        SELECT дата, склад, товар_id, артикул, наименование,
+               остаток, продано, пополнение, цена
         FROM alyans_refresh_v3
         WHERE {' AND '.join(where)}
-        ORDER BY дата ASC;
+        ORDER BY дата ASC
     """
 
     try:
@@ -264,12 +303,22 @@ def get_product_timeseries(tovar_id=None, sklads=None):
         if df.empty:
             return df
 
-        df["дата"] = pd.to_datetime(df["дата"])
+        # --- Приведение типов ---
+        df["дата"] = pd.to_datetime(df["дата"], errors="coerce")
         for col in ["остаток", "продано", "пополнение", "цена"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+        # --- Удаляем дубликаты по дате/складу ---
+        df = (
+            df.sort_values("дата")
+              .drop_duplicates(subset=["дата", "склад"], keep="last")
+              .reset_index(drop=True)
+        )
+
         return df
+
     except Exception:
-        logger.exception("[get_product_timeseries] Ошибка ряда")
+        logger.exception("[get_product_timeseries] Ошибка получения временного ряда")
         return pd.DataFrame()
 
 
@@ -942,6 +991,8 @@ def load_filters(active_tab):
 
 
 # ---------- Колбэки ----------
+# ---------- Колбэки ----------
+
 @app.callback(
     Output("alyans-table", "data"),
     Output("alyans-table", "selected_rows"),
@@ -962,17 +1013,20 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
     if df.empty:
         return [], [], f"ТОП-{top_n}: нет данных"
 
-    if "склад" not in df.columns:
-        df["склад"] = "Суммарно"
+    # Добавляем обязательные колонки
+    for col in ["артикул", "наименование", "всего_продано", "склад", "товар_id"]:
+        if col not in df.columns:
+            df[col] = None
 
     df = df.rename(columns={
         "артикул": "Артикул",
         "наименование": "Наименование",
         "всего_продано": "Продано",
-        "склад": "Склад"
+        "склад": "Склад",
+        "товар_id": "Товар ID"
     })
 
-    df = df[["Артикул", "Наименование", "Продано", "Склад"]]
+    df = df[["Артикул", "Наименование", "Продано", "Склад", "Товар ID"]]
     return df.to_dict("records"), [], f"ТОП-{top_n} товаров по продажам"
 
 
@@ -982,40 +1036,123 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
     Input("alyans-table", "selected_rows")
 )
 def update_alyans_graph(table_data, selected_rows):
+    """
+    Обновляет график по выбранному товару.
+    Если выбран один склад — показывает его.
+    Если выбрано 'Суммарно' или None — агрегирует по всем складам.
+    """
     if not table_data or not selected_rows:
         return go.Figure(layout=go.Layout(title="Выберите товар из таблицы"))
 
     sel = table_data[selected_rows[0]]
-    art = sel.get("Артикул")
+    tovar_id = sel.get("Товар ID") or sel.get("Артикул")
     skl = sel.get("Склад")
 
-    if not art:
-        return go.Figure(layout=go.Layout(title="Нет артикула"))
+    if not tovar_id:
+        return go.Figure(layout=go.Layout(title="Нет идентификатора товара"))
 
-    df = get_product_timeseries(tovar_id=art, sklads=[skl] if skl != "Суммарно" else None)
+    # --- Загружаем временной ряд ---
+    df = get_product_timeseries(
+        tovar_id=tovar_id,
+        sklads=[skl] if skl and skl != "Суммарно" else None
+    )
+
     if df.empty:
-        return go.Figure(layout=go.Layout(title="Нет данных по товару"))
+        return go.Figure(layout=go.Layout(title=f"Нет данных по товару {tovar_id}"))
 
-    agg = df.groupby("дата", as_index=False).agg({
-        "остаток": "sum",
-        "продано": "sum",
-        "пополнение": "sum"
-    })
+    # --- Приведение и сортировка ---
+    df = df.sort_values("дата")
+    df["дата"] = pd.to_datetime(df["дата"])
+    for col in ["остаток", "продано", "пополнение"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
+    # --- Проверка последовательности дат ---
+    all_dates = pd.date_range(df["дата"].min(), df["дата"].max(), freq="D")
+    missing_dates = set(all_dates.date) - set(df["дата"].dt.date)
+    if missing_dates:
+        logger.warning(f"[{tovar_id}] Пропущенные даты: {sorted(list(missing_dates))[:5]}...")
+
+    # --- Если несколько складов — рисуем каждый отдельно ---
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=agg["дата"], y=agg["продано"], name="Продано"))
-    fig.add_trace(go.Bar(x=agg["дата"], y=agg["пополнение"], name="Пополнено"))
-    fig.add_trace(go.Scatter(x=agg["дата"], y=agg["остаток"], mode="lines+markers", name="Остаток", yaxis="y2"))
 
+    if df["склад"].nunique() > 1:
+        for skl_name, sub in df.groupby("склад"):
+            sub = sub.groupby("дата", as_index=False).agg({
+                "продано": "sum",
+                "пополнение": "sum",
+                "остаток": "mean"
+            })
+            fig.add_trace(go.Bar(
+                x=sub["дата"],
+                y=sub["продано"],
+                name=f"Продано ({skl_name})",
+                opacity=0.7
+            ))
+            fig.add_trace(go.Bar(
+                x=sub["дата"],
+                y=sub["пополнение"],
+                name=f"Пополнено ({skl_name})",
+                opacity=0.7
+            ))
+            fig.add_trace(go.Scatter(
+                x=sub["дата"],
+                y=sub["остаток"],
+                mode="lines+markers",
+                name=f"Остаток ({skl_name})",
+                yaxis="y2"
+            ))
+    else:
+        agg = df.groupby("дата", as_index=False).agg({
+            "остаток": "mean",
+            "продано": "sum",
+            "пополнение": "sum"
+        })
+        fig.add_trace(go.Bar(x=agg["дата"], y=agg["продано"], name="Продано", marker_color="steelblue"))
+        fig.add_trace(go.Bar(x=agg["дата"], y=agg["пополнение"], name="Пополнено", marker_color="lightgreen"))
+        fig.add_trace(go.Scatter(
+            x=agg["дата"],
+            y=agg["остаток"],
+            mode="lines+markers",
+            name="Остаток",
+            yaxis="y2",
+            line=dict(color="firebrick", width=2)
+        ))
+
+    # --- Проверка корректности остатков ---
+    try:
+        df_sorted = df.sort_values(["дата"])
+        check_diff = df_sorted["остаток"].diff().fillna(0)
+        if (check_diff.abs() > df_sorted["пополнение"].max() * 2).any():
+            logger.warning(f"[{tovar_id}] Возможные несоответствия в остатках")
+    except Exception:
+        logger.exception(f"[{tovar_id}] Ошибка при проверке остатков")
+
+    # --- Настройки графика ---
     fig.update_layout(
-        title=f"Динамика продаж и остатков — {art}",
+        title=f"📦 Динамика продаж и остатков — {sel.get('Наименование', '')} ({tovar_id})",
         xaxis_title="Дата",
-        yaxis_title="Количество",
-        yaxis2=dict(title="Остаток", overlaying="y", side="right"),
+        yaxis_title="Продано / Пополнено",
+        yaxis2=dict(title="Остаток", overlaying="y", side="right", showgrid=False),
         barmode="group",
         template="plotly_white",
-        height=520
+        height=540,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.3),
+        margin=dict(l=60, r=60, t=70, b=60),
     )
+
+    # --- Дополнительные аннотации ---
+    total_sold = int(df["продано"].sum())
+    total_refilled = int(df["пополнение"].sum())
+    last_stock = int(df["остаток"].iloc[-1])
+
+    fig.add_annotation(
+        text=f"💰 Всего продано: {total_sold:,} | 🔄 Пополнено: {total_refilled:,} | 📦 Остаток: {last_stock:,}",
+        showarrow=False,
+        xref="paper", yref="paper",
+        x=0.5, y=-0.25,
+        font=dict(size=13, color="gray")
+    )
+
     return fig
 
 
