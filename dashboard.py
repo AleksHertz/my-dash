@@ -152,6 +152,7 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
     - Склад
     - Группа
     - Проект (Корея / Китай)
+    Оптимизировано для больших данных.
     """
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
@@ -183,21 +184,34 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
         "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
     ]
 
+    # --- 🔹 Обработка фильтра "Проект" ---
     if project == "Корея":
-        # Используем ILIKE с OR для гибкости поиска
+        # Ограничиваем период, чтобы избежать OOM
+        params["start_date"] = (datetime.utcnow().date() - timedelta(days=365))
+        where.append("дата >= :start_date")
+
         korea_clauses = []
         for i, g in enumerate(korea_groups):
             pname = f"pg_{i}"
             params[pname] = f"%{g}%"
             korea_clauses.append(f"группа ILIKE :{pname}")
         where.append("(" + " OR ".join(korea_clauses) + ")")
+
     elif project == "Китай":
+        # Аналогично ограничим по дате
+        params["start_date"] = (datetime.utcnow().date() - timedelta(days=365))
+        where.append("дата >= :start_date")
         where.append("LOWER(группа) LIKE '%china%'")
 
-    # --- 🔹 Ограничение по дате (ускоряет работу при больших данных) ---
+    # --- 🔹 Если только склады (без группы и проекта) — ограничим по дате для скорости ---
     if sklads and not groups and not project:
         params["start_date"] = (datetime.utcnow().date() - timedelta(days=180))
         where.append("дата >= :start_date")
+
+    # --- 🔹 Если вообще ничего не выбрано — не тянем всё подряд ---
+    if not sklads and not groups and not project:
+        logger.warning("⚠️ Слишком широкий запрос без фильтров — пропущен.")
+        return pd.DataFrame()
 
     where_clause = " AND ".join(where)
 
@@ -231,7 +245,6 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
                     LIMIT :top_n
                 """
 
-            # ⚡ Выполняем с параметрами в виде словаря (SQLAlchemy-safe)
             res = conn.execute(text(sql), params)
             df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
@@ -239,14 +252,15 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
             return df
 
         # --- Приведение типов ---
-        df["всего_продано"] = pd.to_numeric(df["всего_продано"], errors="coerce").fillna(0).astype(int)
-        df["всего_пополнено"] = pd.to_numeric(df["всего_пополнено"], errors="coerce").fillna(0).astype(int)
+        for col in ["всего_продано", "всего_пополнено"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
         return df
 
     except Exception:
         logger.exception("[get_top_products] Ошибка получения ТОП товаров")
         return pd.DataFrame()
+
 
 # ---------- Временной ряд ----------
 def get_product_timeseries(tovar_id=None, sklads=None, project=None):
@@ -1005,29 +1019,53 @@ def load_filters(active_tab):
 def update_alyans_table(selected_sklads, selected_groups, selected_project, top_n):
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
+    top_n = int(top_n or 100)
 
     if not sklads and not groups and not selected_project:
         return [], [], "Выберите склад, группу или проект"
 
-    df = get_top_products(top_n=top_n or 100, sklads=sklads, groups=groups, project=selected_project)
+    df = get_top_products(
+        top_n=top_n,
+        sklads=sklads,
+        groups=groups,
+        project=selected_project
+    )
+
     if df.empty:
         return [], [], f"ТОП-{top_n}: нет данных"
 
-    # Добавляем обязательные колонки
-    for col in ["артикул", "наименование", "всего_продано", "склад", "товар_id"]:
+    # Добавляем отсутствующие колонки
+    for col in ["артикул", "наименование", "всего_продано", "всего_пополнено", "склад", "товар_id"]:
         if col not in df.columns:
             df[col] = None
 
+    # Формируем таблицу с отображением нужных полей
     df = df.rename(columns={
         "артикул": "Артикул",
         "наименование": "Наименование",
         "всего_продано": "Продано",
+        "всего_пополнено": "Пополнено",
         "склад": "Склад",
         "товар_id": "Товар ID"
     })
 
-    df = df[["Артикул", "Наименование", "Продано", "Склад", "Товар ID"]]
-    return df.to_dict("records"), [], f"ТОП-{top_n} товаров по продажам"
+    # Сортируем и ограничиваем вывод (если данных больше, чем нужно)
+    df = df.sort_values("Продано", ascending=False).head(top_n)
+    df = df[["Артикул", "Наименование", "Продано", "Пополнено", "Склад", "Товар ID"]]
+
+    # Корректный заголовок с активными фильтрами
+    title_parts = [f"ТОП-{top_n} товаров"]
+    if sklads:
+        title_parts.append(f"по складам: {', '.join(sklads)}")
+    if groups:
+        title_parts.append(f"по группам: {', '.join(groups)}")
+    if selected_project:
+        title_parts.append(f"проект: {selected_project}")
+
+    title = " | ".join(title_parts)
+
+    return df.to_dict("records"), [], title
+
 
 
 @app.callback(
