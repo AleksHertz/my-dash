@@ -1227,14 +1227,20 @@ def update_alyans_graph(table_data, selected_rows):
                 yaxis="y2"
             ))
 
-    # --- Аннотация внизу ---
+     # --- Аннотация внизу ---
     total_sold = int(df["продано"].sum())
     total_refilled = int(df["пополнение"].sum())
-    last_stock = int(df["остаток"].iloc[-1])
 
-    # y=-0.22 помещает текст прямо под легендой, не обрезая
+    # 🧮 Берём последний день и суммируем остатки по всем складам на эту дату
+    last_date = df["дата"].max()
+    last_stock = int(df.loc[df["дата"] == last_date, "остаток"].sum())
+
     fig.add_annotation(
-        text=f"💰 Всего продано: {total_sold:,} | 🔄 Пополнено: {total_refilled:,} | 📦 Остаток: {last_stock:,}",
+        text=(
+            f"💰 Всего продано: {total_sold:,} | "
+            f"🔄 Пополнено: {total_refilled:,} | "
+            f"📦 Остаток (на {last_date.date()}): {last_stock:,}"
+        ),
         showarrow=False,
         xref="paper", yref="paper",
         x=0.5, y=-0.22,
