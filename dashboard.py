@@ -152,7 +152,7 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
     - Склад
     - Группа
     - Проект (Корея / Китай)
-    Оптимизировано для больших данных.
+    Оптимизировано для больших данных, сохранены оригинальные группы Korea.
     """
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
@@ -169,7 +169,11 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
         where.append("группа = ANY(:groups)")
         params["groups"] = groups
 
-    # --- 🔹 Проектные группы (KOREA и др.) ---
+    # --- 🔹 Базовое ограничение по дате (ускоряет запрос) ---
+    params["start_date"] = (datetime.utcnow().date() - timedelta(days=365))
+    where.append("дата >= :start_date")
+
+    # --- 🔹 Проектные группы (твой оригинальный список Korea) ---
     korea_groups = [
         "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
         "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
@@ -186,40 +190,30 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
 
     # --- 🔹 Обработка фильтра "Проект" ---
     if project == "Корея":
-        # Ограничиваем период, чтобы избежать OOM
-        params["start_date"] = (datetime.utcnow().date() - timedelta(days=365))
-        where.append("дата >= :start_date")
-
-        korea_clauses = []
+        clauses = []
         for i, g in enumerate(korea_groups):
             pname = f"pg_{i}"
             params[pname] = f"%{g}%"
-            korea_clauses.append(f"группа ILIKE :{pname}")
-        where.append("(" + " OR ".join(korea_clauses) + ")")
+            clauses.append(f"группа ILIKE :{pname}")
+        where.append("(" + " OR ".join(clauses) + ")")
 
     elif project == "Китай":
-        # Аналогично ограничим по дате
-        params["start_date"] = (datetime.utcnow().date() - timedelta(days=365))
-        where.append("дата >= :start_date")
         where.append("LOWER(группа) LIKE '%china%'")
 
-    # --- 🔹 Если только склады (без группы и проекта) — ограничим по дате для скорости ---
+    # --- 🔹 Если только склады (без групп/проектов) — сокращаем период до 180 дней ---
     if sklads and not groups and not project:
         params["start_date"] = (datetime.utcnow().date() - timedelta(days=180))
-        where.append("дата >= :start_date")
 
-    # --- 🔹 Если вообще ничего не выбрано — не тянем всё подряд ---
+    # --- 🔹 Без фильтров не тянем всё подряд ---
     if not sklads and not groups and not project:
-        logger.warning("⚠️ Слишком широкий запрос без фильтров — пропущен.")
+        logger.warning("⚠️ Пропущен слишком широкий запрос без фильтров.")
         return pd.DataFrame()
 
     where_clause = " AND ".join(where)
-
-    # --- 🔹 Если выбрано несколько складов — суммируем ---
     aggregate = len(sklads) > 1
 
     try:
-        with engine.connect() as conn:
+        with engine.connect().execution_options(stream_results=True, timeout=30) as conn:
             if aggregate:
                 sql = f"""
                     SELECT товар_id, артикул, наименование,
@@ -227,8 +221,8 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
                            SUM(пополнение) AS всего_пополнено
                     FROM alyans_refresh_v3
                     WHERE {where_clause}
+                      AND продано > 0
                     GROUP BY товар_id, артикул, наименование
-                    HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
                     LIMIT :top_n
                 """
@@ -239,27 +233,35 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
                            SUM(пополнение) AS всего_пополнено
                     FROM alyans_refresh_v3
                     WHERE {where_clause}
+                      AND продано > 0
                     GROUP BY склад, товар_id, артикул, наименование
-                    HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
                     LIMIT :top_n
                 """
 
+            t0 = datetime.now()
             res = conn.execute(text(sql), params)
             df = pd.DataFrame(res.fetchall(), columns=res.keys())
+            dt = (datetime.now() - t0).total_seconds()
+
+        logger.info(
+            f"[get_top_products] ✅ {len(df)} строк, проект={project}, sklads={sklads}, "
+            f"groups={groups}, время={dt:.2f} сек."
+        )
 
         if df.empty:
             return df
 
-        # --- Приведение типов ---
+        # Приведение типов
         for col in ["всего_продано", "всего_пополнено"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
         return df
 
-    except Exception:
-        logger.exception("[get_top_products] Ошибка получения ТОП товаров")
+    except Exception as e:
+        logger.exception(f"[get_top_products] ❌ Ошибка выполнения SQL: {e}")
         return pd.DataFrame()
+
 
 
 # ---------- Временной ряд ----------
