@@ -147,25 +147,29 @@ def get_unique_groups():
 
 # ---------- ТОП товаров ----------
 def get_top_products(top_n=100, sklads=None, groups=None, project=None):
+    """
+    Возвращает ТОП товаров по продажам с фильтрами:
+    - Склад
+    - Группа
+    - Проект (Корея / Китай)
+    Оптимизировано для больших данных.
+    """
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
     params = {"top_n": int(top_n)}
     where = ["1=1"]
 
-    print(f"\n=== get_top_products START ===")
-    print(f"→ top_n={top_n}, sklads={sklads}, groups={groups}, project={project}")
-
+    # --- 🔹 Фильтр по складам ---
     if sklads:
         where.append("склад = ANY(:sklads)")
         params["sklads"] = sklads
 
+    # --- 🔹 Фильтр по группам ---
     if groups:
         where.append("группа = ANY(:groups)")
         params["groups"] = groups
 
-    params["start_date"] = (datetime.utcnow().date() - timedelta(days=365))
-    where.append("дата >= :start_date")
-
+    # --- 🔹 Группы проекта Корея ---
     korea_groups = [
         "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
         "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
@@ -180,30 +184,71 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
         "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
     ]
 
+    # --- 🔹 Группы проекта Китай ---
+    china_groups = [
+        "ПРОЕКТ КАМАЗ ГОРОД\\КИТАЙ-КАМАЗ",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\SHACMAN OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\HOWO SITRAK",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ГРУЗОВОЙ OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\FAW OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ЛЕГКОВОЙ OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\DONGFENG ОБЩАЯ\\DONGFENG OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\FOTON OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-JAC",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ЦС",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-SHACMAN",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-SITRAK",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\КАМАЗ КОМПАС",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\+КИТАЙ ГРУЗОВЫЕ ОПТ-УЦЕНКА",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\+КИТАЙ ГРУЗОВЫЕ ОПТ-ЗАКРЫТО",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\CREATEK",
+        "ПРОЕКТ МАЗ\\КИТАЙ-МАЗ",
+        "ПРОЕКТ ПНЕВМО\\ПНЕВМО-КИТАЙ",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\WEICHAI",
+    ]
+
+    # --- 🔹 Обработка фильтра "Проект" ---
     if project == "Корея":
-        clauses = []
+        params["start_date"] = (datetime.utcnow().date() - timedelta(days=365))
+        where.append("дата >= :start_date")
+
+        korea_clauses = []
         for i, g in enumerate(korea_groups):
             pname = f"pg_{i}"
-            params[pname] = f"%{g.replace('\\', '%')}%"  # ← заменим \ на % для ILIKE
-            clauses.append(f"группа ILIKE :{pname}")
-        where.append("(" + " OR ".join(clauses) + ")")
-        print(f"→ Added {len(clauses)} Korea clauses")
+            params[pname] = f"%{g}%"
+            korea_clauses.append(f"группа ILIKE :{pname}")
+        where.append("(" + " OR ".join(korea_clauses) + ")")
 
     elif project == "Китай":
-        where.append("LOWER(группа) LIKE '%china%'")
-        print("→ Added China filter")
+        params["start_date"] = (datetime.utcnow().date() - timedelta(days=365))
+        where.append("дата >= :start_date")
 
+        china_clauses = []
+        for i, g in enumerate(china_groups):
+            pname = f"ch_{i}"
+            params[pname] = f"%{g}%"
+            china_clauses.append(f"группа ILIKE :{pname}")
+        where.append("(" + " OR ".join(china_clauses) + ")")
+
+    # --- 🔹 Если только склады (без группы и проекта) — ограничим по дате для скорости ---
+    if sklads and not groups and not project:
+        params["start_date"] = (datetime.utcnow().date() - timedelta(days=180))
+        where.append("дата >= :start_date")
+
+    # --- 🔹 Без фильтров не выполняем ---
     if not sklads and not groups and not project:
-        print("⚠️ Пустые фильтры — возвращаем пустой df")
+        logger.warning("⚠️ Слишком широкий запрос без фильтров — пропущен.")
         return pd.DataFrame()
 
     where_clause = " AND ".join(where)
     aggregate = len(sklads) > 1
 
-    print(f"→ WHERE CLAUSE:\n{where_clause}")
-
     try:
-        with engine.connect().execution_options(stream_results=True, timeout=30) as conn:
+        print("=== get_top_products START ===")
+        print(f"→ top_n={top_n}, sklads={sklads}, groups={groups}, project={project}")
+        print(f"→ WHERE CLAUSE:\n{where_clause}")
+
+        with engine.connect() as conn:
             if aggregate:
                 sql = f"""
                     SELECT товар_id, артикул, наименование,
@@ -211,8 +256,8 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
                            SUM(пополнение) AS всего_пополнено
                     FROM alyans_refresh_v3
                     WHERE {where_clause}
-                      AND продано > 0
                     GROUP BY товар_id, артикул, наименование
+                    HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
                     LIMIT :top_n
                 """
@@ -223,34 +268,33 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
                            SUM(пополнение) AS всего_пополнено
                     FROM alyans_refresh_v3
                     WHERE {where_clause}
-                      AND продано > 0
                     GROUP BY склад, товар_id, артикул, наименование
+                    HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
                     LIMIT :top_n
                 """
 
-            print(f"→ Executing SQL (top_n={top_n})...")
-            t0 = datetime.now()
+            start = datetime.now()
             res = conn.execute(text(sql), params)
-            rows = res.fetchall()
-            print(f"→ Query done in {(datetime.now()-t0).total_seconds():.2f}s, rows={len(rows)}")
-            df = pd.DataFrame(rows, columns=res.keys())
+            df = pd.DataFrame(res.fetchall(), columns=res.keys())
+            dur = (datetime.now() - start).total_seconds()
+            print(f"→ Query done in {dur:.2f}s, rows={len(df)}")
 
         if df.empty:
-            print("⚠️ Запрос вернул пустой DataFrame")
-        else:
-            print(f"✅ Получено {len(df)} строк")
+            print("⚠️ Пустой результат")
+            return df
 
-        for col in ["всего_продано", "всего_пополнено"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+        df["всего_продано"] = pd.to_numeric(df["всего_продано"], errors="coerce").fillna(0).astype(int)
+        df["всего_пополнено"] = pd.to_numeric(df["всего_пополнено"], errors="coerce").fillna(0).astype(int)
+        print(f"✅ Получено {len(df)} строк")
+        print("=== get_top_products END ===")
 
-        print("=== get_top_products END ===\n")
         return df
 
-    except Exception as e:
-        print(f"❌ Ошибка SQL: {e}")
+    except Exception:
+        logger.exception("[get_top_products] Ошибка получения ТОП товаров")
         return pd.DataFrame()
+
 
 
 # ---------- Временной ряд ----------
