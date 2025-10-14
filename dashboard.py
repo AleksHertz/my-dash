@@ -11,8 +11,10 @@ import logging
 import glob
 import numpy as np
 import xlsxwriter
-from openpyxl import load_workbook
+from openpyxl import load_workbook, Workbook
 from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment, Font
+from openpyxl.utils.dataframe import dataframe_to_rows
 import zipfile
 import requests
 from io import BytesIO
@@ -1262,6 +1264,86 @@ def update_alyans_graph(table_data, selected_rows):
     return fig
 
 
+@app.callback(
+    Output("download-alyans-xlsx", "data"),
+    Input("download-alyans-btn", "n_clicks"),
+    State("alyans-table", "data"),
+    State("alyans-table", "selected_rows"),
+    prevent_initial_call=True
+)
+def download_alyans_xlsx(n_clicks, table_data, selected_rows):
+    if not table_data or not selected_rows:
+        return None
+
+    sel = table_data[selected_rows[0]]
+    tovar_id = sel.get("Товар ID") or sel.get("Артикул")
+    skl = sel.get("Склад")
+
+    df = get_product_timeseries(
+        tovar_id=tovar_id,
+        sklads=[skl] if skl and skl != "Суммарно" else None
+    )
+    if df.empty:
+        return None
+
+    df = df.sort_values("дата")
+    df["дата"] = pd.to_datetime(df["дата"])
+    for col in ["остаток", "продано", "пополнение", "цена"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # --- Создаём Excel в памяти ---
+    wb = Workbook()
+    ws_summary = wb.active
+    ws_summary.title = "Свод"
+
+    # --- Общая агрегированная таблица ---
+    agg = df.groupby("дата", as_index=False).agg({
+        "продано": "sum",
+        "пополнение": "sum",
+        "остаток": "sum",
+        "цена": "mean"
+    })
+    agg.rename(columns={"цена": "Средняя цена, ₽"}, inplace=True)
+
+    # Запись данных в сводную вкладку
+    for r in dataframe_to_rows(agg, index=False, header=True):
+        ws_summary.append(r)
+
+    # --- Добавляем вкладки по складам ---
+    for skl_name, sub in df.groupby("склад"):
+        ws = wb.create_sheet(title=str(skl_name)[:31])  # Excel ограничивает длину названия
+        sub_out = sub[["дата", "продано", "пополнение", "остаток", "цена"]].copy()
+        sub_out.rename(columns={"цена": "Цена, ₽"}, inplace=True)
+        for r in dataframe_to_rows(sub_out, index=False, header=True):
+            ws.append(r)
+
+        # форматирование колонок
+        for col in ws.columns:
+            max_length = max(len(str(cell.value)) if cell.value is not None else 0 for cell in col)
+            ws.column_dimensions[get_column_letter(col[0].column)].width = max_length + 2
+            for cell in col:
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.freeze_panes = "A2"
+
+    # --- Форматируем свод ---
+    for col in ws_summary.columns:
+        max_length = max(len(str(cell.value)) if cell.value is not None else 0 for cell in col)
+        ws_summary.column_dimensions[get_column_letter(col[0].column)].width = max_length + 2
+        for cell in col:
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws_summary.freeze_panes = "A2"
+
+    # --- Метаданные и стиль ---
+    ws_summary["A1"].font = Font(bold=True)
+    ws_summary["A1"].alignment = Alignment(horizontal="center")
+
+    # --- Сохраняем в буфер ---
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+
+    filename = f"Отчёт_{tovar_id}.xlsx"
+    return dcc.send_bytes(bio.getvalue(), filename)
 
 
 # --- Утилиты ---
