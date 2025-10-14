@@ -1085,11 +1085,6 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
     Input("alyans-table", "selected_rows")
 )
 def update_alyans_graph(table_data, selected_rows):
-    """
-    Обновляет график по выбранному товару.
-    Если выбран один склад — показывает его.
-    Если выбрано 'Суммарно' или None — агрегирует по всем складам.
-    """
     if not table_data or not selected_rows:
         return go.Figure(layout=go.Layout(title="Выберите товар из таблицы"))
 
@@ -1100,83 +1095,139 @@ def update_alyans_graph(table_data, selected_rows):
     if not tovar_id:
         return go.Figure(layout=go.Layout(title="Нет идентификатора товара"))
 
-    # --- Загружаем временной ряд ---
     df = get_product_timeseries(
         tovar_id=tovar_id,
         sklads=[skl] if skl and skl != "Суммарно" else None
     )
-
     if df.empty:
         return go.Figure(layout=go.Layout(title=f"Нет данных по товару {tovar_id}"))
 
-    # --- Приведение и сортировка ---
     df = df.sort_values("дата")
     df["дата"] = pd.to_datetime(df["дата"])
-    for col in ["остаток", "продано", "пополнение"]:
+    for col in ["остаток", "продано", "пополнение", "цена"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    # --- Проверка последовательности дат ---
-    all_dates = pd.date_range(df["дата"].min(), df["дата"].max(), freq="D")
-    missing_dates = set(all_dates.date) - set(df["дата"].dt.date)
-    if missing_dates:
-        logger.warning(f"[{tovar_id}] Пропущенные даты: {sorted(list(missing_dates))[:5]}...")
+    # --- Сигнал изменения цены ---
+    df["price_prev"] = df["цена"].shift(1)
+    df["price_change"] = ""
+    df.loc[df["цена"] > df["price_prev"], "price_change"] = "⬆️"
+    df.loc[df["цена"] < df["price_prev"], "price_change"] = "⬇️"
+    df["hover_text"] = df.apply(
+        lambda r: f"Дата: {r['дата'].date()}<br>"
+                  f"Продано: {int(r['продано'])}<br>"
+                  f"Пополнено: {int(r['пополнение'])}<br>"
+                  f"Остаток: {int(r['остаток'])}<br>"
+                  f"Цена: {r['цена']:.2f} {r['price_change']}",
+        axis=1
+    )
 
-    # --- Если несколько складов — рисуем каждый отдельно ---
     fig = go.Figure()
-
     if df["склад"].nunique() > 1:
         for skl_name, sub in df.groupby("склад"):
-            sub = sub.groupby("дата", as_index=False).agg({
+            sub_agg = sub.groupby("дата", as_index=False).agg({
                 "продано": "sum",
                 "пополнение": "sum",
-                "остаток": "mean"
+                "остаток": "mean",
+                "цена": "mean"
             })
+            sub_agg["price_prev"] = sub_agg["цена"].shift(1)
+            sub_agg["price_change"] = ""
+            sub_agg.loc[sub_agg["цена"] > sub_agg["price_prev"], "price_change"] = "⬆️"
+            sub_agg.loc[sub_agg["цена"] < sub_agg["price_prev"], "price_change"] = "⬇️"
+            sub_agg["hover_text"] = sub_agg.apply(
+                lambda r: f"Дата: {r['дата'].date()}<br>"
+                          f"Продано: {int(r['продано'])}<br>"
+                          f"Пополнено: {int(r['пополнение'])}<br>"
+                          f"Остаток: {int(r['остаток'])}<br>"
+                          f"Цена: {r['цена']:.2f} {r['price_change']}",
+                axis=1
+            )
+
+            # --- Стандартные графики ---
             fig.add_trace(go.Bar(
-                x=sub["дата"],
-                y=sub["продано"],
-                name=f"Продано ({skl_name})",
-                opacity=0.7
+                x=sub_agg["дата"], y=sub_agg["продано"],
+                name=f"Продано ({skl_name})", opacity=0.7,
+                hovertext=sub_agg["hover_text"], hoverinfo="text"
             ))
             fig.add_trace(go.Bar(
-                x=sub["дата"],
-                y=sub["пополнение"],
-                name=f"Пополнено ({skl_name})",
-                opacity=0.7
+                x=sub_agg["дата"], y=sub_agg["пополнение"],
+                name=f"Пополнено ({skl_name})", opacity=0.7,
+                hovertext=sub_agg["hover_text"], hoverinfo="text"
             ))
             fig.add_trace(go.Scatter(
-                x=sub["дата"],
-                y=sub["остаток"],
-                mode="lines+markers",
-                name=f"Остаток ({skl_name})",
-                yaxis="y2"
+                x=sub_agg["дата"], y=sub_agg["остаток"],
+                mode="lines+markers", name=f"Остаток ({skl_name})",
+                yaxis="y2", line=dict(width=2),
+                hovertext=sub_agg["hover_text"], hoverinfo="text"
             ))
+
+            # --- Точки изменения цены ---
+            price_change_points = sub_agg[sub_agg["price_change"] != ""]
+            if not price_change_points.empty:
+                fig.add_trace(go.Scatter(
+                    x=price_change_points["дата"], y=price_change_points["остаток"],
+                    mode="markers",
+                    marker=dict(size=10, color="orange", symbol="circle-open"),
+                    name=f"Изм. цены ({skl_name})",
+                    hovertext=price_change_points["hover_text"],
+                    hoverinfo="text",
+                    yaxis="y2"
+                ))
     else:
         agg = df.groupby("дата", as_index=False).agg({
-            "остаток": "mean",
             "продано": "sum",
-            "пополнение": "sum"
+            "пополнение": "sum",
+            "остаток": "mean",
+            "цена": "mean"
         })
-        fig.add_trace(go.Bar(x=agg["дата"], y=agg["продано"], name="Продано", marker_color="steelblue"))
-        fig.add_trace(go.Bar(x=agg["дата"], y=agg["пополнение"], name="Пополнено", marker_color="lightgreen"))
+        agg["price_prev"] = agg["цена"].shift(1)
+        agg["price_change"] = ""
+        agg.loc[agg["цена"] > agg["price_prev"], "price_change"] = "⬆️"
+        agg.loc[agg["цена"] < agg["price_prev"], "price_change"] = "⬇️"
+        agg["hover_text"] = agg.apply(
+            lambda r: f"Дата: {r['дата'].date()}<br>"
+                      f"Продано: {int(r['продано'])}<br>"
+                      f"Пополнено: {int(r['пополнение'])}<br>"
+                      f"Остаток: {int(r['остаток'])}<br>"
+                      f"Цена: {r['цена']:.2f} {r['price_change']}",
+            axis=1
+        )
+
+        fig.add_trace(go.Bar(x=agg["дата"], y=agg["продано"], name="Продано",
+                             marker_color="steelblue", hovertext=agg["hover_text"], hoverinfo="text"))
+        fig.add_trace(go.Bar(x=agg["дата"], y=agg["пополнение"], name="Пополнено",
+                             marker_color="lightgreen", hovertext=agg["hover_text"], hoverinfo="text"))
         fig.add_trace(go.Scatter(
-            x=agg["дата"],
-            y=agg["остаток"],
-            mode="lines+markers",
-            name="Остаток",
-            yaxis="y2",
-            line=dict(color="firebrick", width=2)
+            x=agg["дата"], y=agg["остаток"], mode="lines+markers",
+            name="Остаток", yaxis="y2", line=dict(color="firebrick", width=2),
+            hovertext=agg["hover_text"], hoverinfo="text"
         ))
 
-    # --- Проверка корректности остатков ---
-    try:
-        df_sorted = df.sort_values(["дата"])
-        check_diff = df_sorted["остаток"].diff().fillna(0)
-        if (check_diff.abs() > df_sorted["пополнение"].max() * 2).any():
-            logger.warning(f"[{tovar_id}] Возможные несоответствия в остатках")
-    except Exception:
-        logger.exception(f"[{tovar_id}] Ошибка при проверке остатков")
+        # --- Точки изменения цены ---
+        price_change_points = agg[agg["price_change"] != ""]
+        if not price_change_points.empty:
+            fig.add_trace(go.Scatter(
+                x=price_change_points["дата"], y=price_change_points["остаток"],
+                mode="markers",
+                marker=dict(size=10, color="orange", symbol="circle-open"),
+                name="Изм. цены",
+                hovertext=price_change_points["hover_text"],
+                hoverinfo="text",
+                yaxis="y2"
+            ))
 
-    # --- Настройки графика ---
+    # --- Аннотация внизу ---
+    total_sold = int(df["продано"].sum())
+    total_refilled = int(df["пополнение"].sum())
+    last_stock = int(df["остаток"].iloc[-1])
+    fig.add_annotation(
+        text=f"💰 Всего продано: {total_sold:,} | 🔄 Пополнено: {total_refilled:,} | 📦 Остаток: {last_stock:,}",
+        showarrow=False,
+        xref="paper", yref="paper",
+        x=0.5, y=-0.35,
+        font=dict(size=13, color="gray")
+    )
+
     fig.update_layout(
         title=f"📦 Динамика продаж и остатков — {sel.get('Наименование', '')} ({tovar_id})",
         xaxis_title="Дата",
@@ -1184,22 +1235,9 @@ def update_alyans_graph(table_data, selected_rows):
         yaxis2=dict(title="Остаток", overlaying="y", side="right", showgrid=False),
         barmode="group",
         template="plotly_white",
-        height=540,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.3),
-        margin=dict(l=60, r=60, t=70, b=60),
-    )
-
-    # --- Дополнительные аннотации ---
-    total_sold = int(df["продано"].sum())
-    total_refilled = int(df["пополнение"].sum())
-    last_stock = int(df["остаток"].iloc[-1])
-
-    fig.add_annotation(
-        text=f"💰 Всего продано: {total_sold:,} | 🔄 Пополнено: {total_refilled:,} | 📦 Остаток: {last_stock:,}",
-        showarrow=False,
-        xref="paper", yref="paper",
-        x=0.5, y=-0.25,
-        font=dict(size=13, color="gray")
+        height=560,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.2),
+        margin=dict(l=60, r=60, t=70, b=80)
     )
 
     return fig
