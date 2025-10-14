@@ -147,33 +147,25 @@ def get_unique_groups():
 
 # ---------- ТОП товаров ----------
 def get_top_products(top_n=100, sklads=None, groups=None, project=None):
-    """
-    Возвращает ТОП товаров по продажам с фильтрами:
-    - Склад
-    - Группа
-    - Проект (Корея / Китай)
-    Оптимизировано для больших данных, сохранены оригинальные группы Korea.
-    """
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
     params = {"top_n": int(top_n)}
     where = ["1=1"]
 
-    # --- 🔹 Фильтр по складам ---
+    print(f"\n=== get_top_products START ===")
+    print(f"→ top_n={top_n}, sklads={sklads}, groups={groups}, project={project}")
+
     if sklads:
         where.append("склад = ANY(:sklads)")
         params["sklads"] = sklads
 
-    # --- 🔹 Фильтр по группам ---
     if groups:
         where.append("группа = ANY(:groups)")
         params["groups"] = groups
 
-    # --- 🔹 Базовое ограничение по дате (ускоряет запрос) ---
     params["start_date"] = (datetime.utcnow().date() - timedelta(days=365))
     where.append("дата >= :start_date")
 
-    # --- 🔹 Проектные группы (твой оригинальный список Korea) ---
     korea_groups = [
         "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
         "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
@@ -188,29 +180,27 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
         "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
     ]
 
-    # --- 🔹 Обработка фильтра "Проект" ---
     if project == "Корея":
         clauses = []
         for i, g in enumerate(korea_groups):
             pname = f"pg_{i}"
-            params[pname] = f"%{g}%"
+            params[pname] = f"%{g.replace('\\', '%')}%"  # ← заменим \ на % для ILIKE
             clauses.append(f"группа ILIKE :{pname}")
         where.append("(" + " OR ".join(clauses) + ")")
+        print(f"→ Added {len(clauses)} Korea clauses")
 
     elif project == "Китай":
         where.append("LOWER(группа) LIKE '%china%'")
+        print("→ Added China filter")
 
-    # --- 🔹 Если только склады (без групп/проектов) — сокращаем период до 180 дней ---
-    if sklads and not groups and not project:
-        params["start_date"] = (datetime.utcnow().date() - timedelta(days=180))
-
-    # --- 🔹 Без фильтров не тянем всё подряд ---
     if not sklads and not groups and not project:
-        logger.warning("⚠️ Пропущен слишком широкий запрос без фильтров.")
+        print("⚠️ Пустые фильтры — возвращаем пустой df")
         return pd.DataFrame()
 
     where_clause = " AND ".join(where)
     aggregate = len(sklads) > 1
+
+    print(f"→ WHERE CLAUSE:\n{where_clause}")
 
     try:
         with engine.connect().execution_options(stream_results=True, timeout=30) as conn:
@@ -239,29 +229,28 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
                     LIMIT :top_n
                 """
 
+            print(f"→ Executing SQL (top_n={top_n})...")
             t0 = datetime.now()
             res = conn.execute(text(sql), params)
-            df = pd.DataFrame(res.fetchall(), columns=res.keys())
-            dt = (datetime.now() - t0).total_seconds()
-
-        logger.info(
-            f"[get_top_products] ✅ {len(df)} строк, проект={project}, sklads={sklads}, "
-            f"groups={groups}, время={dt:.2f} сек."
-        )
+            rows = res.fetchall()
+            print(f"→ Query done in {(datetime.now()-t0).total_seconds():.2f}s, rows={len(rows)}")
+            df = pd.DataFrame(rows, columns=res.keys())
 
         if df.empty:
-            return df
+            print("⚠️ Запрос вернул пустой DataFrame")
+        else:
+            print(f"✅ Получено {len(df)} строк")
 
-        # Приведение типов
         for col in ["всего_продано", "всего_пополнено"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
+        print("=== get_top_products END ===\n")
         return df
 
     except Exception as e:
-        logger.exception(f"[get_top_products] ❌ Ошибка выполнения SQL: {e}")
+        print(f"❌ Ошибка SQL: {e}")
         return pd.DataFrame()
-
 
 
 # ---------- Временной ряд ----------
