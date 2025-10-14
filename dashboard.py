@@ -1111,8 +1111,7 @@ def update_alyans_graph(table_data, selected_rows):
     df["price_change"] = ""
     df.loc[df["цена"] > df["price_prev"], "price_change"] = "⬆️"
     df.loc[df["цена"] < df["price_prev"], "price_change"] = "⬇️"
-    
-    # --- Hover текст с указанием склада ---
+
     df["hover_text"] = df.apply(
         lambda r: f"Склад: {r.get('склад', '—')}<br>"
                   f"Дата: {r['дата'].date()}<br>"
@@ -1124,6 +1123,8 @@ def update_alyans_graph(table_data, selected_rows):
     )
 
     fig = go.Figure()
+
+    # --- Много складов ---
     if df["склад"].nunique() > 1:
         for skl_name, sub in df.groupby("склад"):
             sub_agg = sub.groupby("дата", as_index=False).agg({
@@ -1163,7 +1164,6 @@ def update_alyans_graph(table_data, selected_rows):
                 hovertext=sub_agg["hover_text"], hoverinfo="text"
             ))
 
-            # --- Точки изменения цены с разными значками ---
             price_change_points = sub_agg[sub_agg["price_change"] != ""]
             if not price_change_points.empty:
                 fig.add_trace(go.Scatter(
@@ -1179,6 +1179,7 @@ def update_alyans_graph(table_data, selected_rows):
                     hoverinfo="text",
                     yaxis="y2"
                 ))
+    # --- Один склад ---
     else:
         agg = df.groupby("дата", as_index=False).agg({
             "продано": "sum",
@@ -1230,11 +1231,13 @@ def update_alyans_graph(table_data, selected_rows):
     total_sold = int(df["продано"].sum())
     total_refilled = int(df["пополнение"].sum())
     last_stock = int(df["остаток"].iloc[-1])
+
+    # y=-0.22 помещает текст прямо под легендой, не обрезая
     fig.add_annotation(
         text=f"💰 Всего продано: {total_sold:,} | 🔄 Пополнено: {total_refilled:,} | 📦 Остаток: {last_stock:,}",
         showarrow=False,
         xref="paper", yref="paper",
-        x=0.5, y=-0.35,
+        x=0.5, y=-0.22,
         font=dict(size=13, color="gray")
     )
 
@@ -1245,12 +1248,13 @@ def update_alyans_graph(table_data, selected_rows):
         yaxis2=dict(title="Остаток", overlaying="y", side="right", showgrid=False),
         barmode="group",
         template="plotly_white",
-        height=580,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.2),
-        margin=dict(l=60, r=60, t=70, b=90)
+        height=620,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.1),
+        margin=dict(l=60, r=60, t=70, b=130)  # увеличенный нижний отступ
     )
 
     return fig
+
 
 
 
