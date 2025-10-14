@@ -1107,13 +1107,15 @@ def update_alyans_graph(table_data, selected_rows):
     for col in ["остаток", "продано", "пополнение", "цена"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    # --- Сигнал изменения цены ---
     df["price_prev"] = df["цена"].shift(1)
     df["price_change"] = ""
     df.loc[df["цена"] > df["price_prev"], "price_change"] = "⬆️"
     df.loc[df["цена"] < df["price_prev"], "price_change"] = "⬇️"
+    
+    # --- Hover текст с указанием склада ---
     df["hover_text"] = df.apply(
-        lambda r: f"Дата: {r['дата'].date()}<br>"
+        lambda r: f"Склад: {r.get('склад', '—')}<br>"
+                  f"Дата: {r['дата'].date()}<br>"
                   f"Продано: {int(r['продано'])}<br>"
                   f"Пополнено: {int(r['пополнение'])}<br>"
                   f"Остаток: {int(r['остаток'])}<br>"
@@ -1135,7 +1137,8 @@ def update_alyans_graph(table_data, selected_rows):
             sub_agg.loc[sub_agg["цена"] > sub_agg["price_prev"], "price_change"] = "⬆️"
             sub_agg.loc[sub_agg["цена"] < sub_agg["price_prev"], "price_change"] = "⬇️"
             sub_agg["hover_text"] = sub_agg.apply(
-                lambda r: f"Дата: {r['дата'].date()}<br>"
+                lambda r: f"Склад: {skl_name}<br>"
+                          f"Дата: {r['дата'].date()}<br>"
                           f"Продано: {int(r['продано'])}<br>"
                           f"Пополнено: {int(r['пополнение'])}<br>"
                           f"Остаток: {int(r['остаток'])}<br>"
@@ -1143,7 +1146,6 @@ def update_alyans_graph(table_data, selected_rows):
                 axis=1
             )
 
-            # --- Стандартные графики ---
             fig.add_trace(go.Bar(
                 x=sub_agg["дата"], y=sub_agg["продано"],
                 name=f"Продано ({skl_name})", opacity=0.7,
@@ -1161,13 +1163,17 @@ def update_alyans_graph(table_data, selected_rows):
                 hovertext=sub_agg["hover_text"], hoverinfo="text"
             ))
 
-            # --- Точки изменения цены ---
+            # --- Точки изменения цены с разными значками ---
             price_change_points = sub_agg[sub_agg["price_change"] != ""]
             if not price_change_points.empty:
                 fig.add_trace(go.Scatter(
                     x=price_change_points["дата"], y=price_change_points["остаток"],
                     mode="markers",
-                    marker=dict(size=10, color="orange", symbol="circle-open"),
+                    marker=dict(
+                        size=12,
+                        color=price_change_points["price_change"].map({"⬆️":"green","⬇️":"red"}),
+                        symbol=price_change_points["price_change"].map({"⬆️":"triangle-up","⬇️":"triangle-down"})
+                    ),
                     name=f"Изм. цены ({skl_name})",
                     hovertext=price_change_points["hover_text"],
                     hoverinfo="text",
@@ -1185,7 +1191,8 @@ def update_alyans_graph(table_data, selected_rows):
         agg.loc[agg["цена"] > agg["price_prev"], "price_change"] = "⬆️"
         agg.loc[agg["цена"] < agg["price_prev"], "price_change"] = "⬇️"
         agg["hover_text"] = agg.apply(
-            lambda r: f"Дата: {r['дата'].date()}<br>"
+            lambda r: f"Склад: {skl or '—'}<br>"
+                      f"Дата: {r['дата'].date()}<br>"
                       f"Продано: {int(r['продано'])}<br>"
                       f"Пополнено: {int(r['пополнение'])}<br>"
                       f"Остаток: {int(r['остаток'])}<br>"
@@ -1203,13 +1210,16 @@ def update_alyans_graph(table_data, selected_rows):
             hovertext=agg["hover_text"], hoverinfo="text"
         ))
 
-        # --- Точки изменения цены ---
         price_change_points = agg[agg["price_change"] != ""]
         if not price_change_points.empty:
             fig.add_trace(go.Scatter(
                 x=price_change_points["дата"], y=price_change_points["остаток"],
                 mode="markers",
-                marker=dict(size=10, color="orange", symbol="circle-open"),
+                marker=dict(
+                    size=12,
+                    color=price_change_points["price_change"].map({"⬆️":"green","⬇️":"red"}),
+                    symbol=price_change_points["price_change"].map({"⬆️":"triangle-up","⬇️":"triangle-down"})
+                ),
                 name="Изм. цены",
                 hovertext=price_change_points["hover_text"],
                 hoverinfo="text",
@@ -1235,12 +1245,13 @@ def update_alyans_graph(table_data, selected_rows):
         yaxis2=dict(title="Остаток", overlaying="y", side="right", showgrid=False),
         barmode="group",
         template="plotly_white",
-        height=560,
+        height=580,
         legend=dict(orientation="h", yanchor="bottom", y=-0.2),
-        margin=dict(l=60, r=60, t=70, b=80)
+        margin=dict(l=60, r=60, t=70, b=90)
     )
 
     return fig
+
 
 
 # --- Утилиты ---
