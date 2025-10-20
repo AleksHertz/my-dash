@@ -934,6 +934,8 @@ app.layout = html.Div([
                             {"label": "Топ-100", "value": 100},
                             {"label": "Топ-250", "value": 250},
                             {"label": "Топ-500", "value": 500},
+                            {"label": "Топ-500", "value": 1000},
+                            {"label": "Топ-500", "value": 2000},
                         ],
                         value=100,
                         inline=True
