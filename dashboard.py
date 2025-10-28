@@ -37,18 +37,12 @@ from collections import defaultdict
 from sqlalchemy.exc import OperationalError
 import re
 from difflib import get_close_matches
-import math
 # --------------------
 # НАСТРОЙКИ
 # --------------------
 HEIGHT_PER_BAR = 30  # высота одной строки в px
 MAX_VISIBLE_BARS = 50  # сколько строк показывать без прокрутки
 MAX_HEIGHT = HEIGHT_PER_BAR * MAX_VISIBLE_BARS  # высота контейнера в px
-
-DB_URL = "postgresql://postgres:SyngvjjliGqUBYDKibMmoOWCVUZVdFjc@tramway.proxy.rlwy.net:13502/railway"
-engine = create_engine(DB_URL, pool_pre_ping=True)
-TABLE_NAME = "alyans_refresh_v3"
-
 
 # --------------------
 # ЗАГРУЗКА И ПРЕДОБРАБОТКА (один раз при старте)
@@ -90,9 +84,10 @@ unique_peak_sklads = sorted(df_peaks['Склад'].dropna().unique()) if not df_
 unique_peak_articles = sorted(df_peaks['Артикул'].dropna().unique()) if not df_peaks.empty else []
 unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()) if not df_peaks.empty else []
 
-# ============================================================
-# Вспомогательные функции
-# ============================================================
+# --- Подключение к Railway ---
+DB_URL = "postgresql://postgres:SyngvjjliGqUBYDKibMmoOWCVUZVdFjc@tramway.proxy.rlwy.net:13502/railway"
+engine = create_engine(DB_URL, pool_pre_ping=True)
+
 
 def _ensure_list(value):
     """Гарантирует, что значение является списком."""
@@ -594,39 +589,6 @@ def github_upload_file(local_path: str, target_path: str, commit_message: str) -
         return False
 
 
-# --- Функция загрузки файла в БД (универсальная) ---
-def get_last_date_in_db():
-    """Возвращает последнюю дату из таблицы."""
-    with engine.connect() as conn:
-        last_date = conn.execute(text(f"SELECT MAX(дата) FROM {TABLE_NAME}")).scalar()
-    return last_date
-
-def extract_date_from_filename(filename):
-    match = re.search(r'(\d{1,2})\.(\d{1,2})', filename)
-    if not match:
-        return None
-    day, month = map(int, match.groups())
-    return datetime(2025, month, day).date()
-
-def calc_changes(df_new, df_prev):
-    df = df_new.merge(df_prev[["товар_id", "склад", "остаток"]], 
-                      on=["товар_id", "склад"], how="left", suffixes=("", "_вчера"))
-    df["продано"] = (df["остаток_вчера"] - df["остаток"]).clip(lower=0).fillna(0).astype(int)
-    df["пополнение"] = (df["остаток"] - df["остаток_вчера"]).clip(lower=0).fillna(0).astype(int)
-    df.drop(columns=["остаток_вчера"], inplace=True)
-    return df
-
-def save_to_db(df):
-    chunk_size = 50000
-    total_chunks = math.ceil(len(df) / chunk_size)
-    with engine.begin() as conn:
-        for i in range(total_chunks):
-            start = i * chunk_size
-            end = min(start + chunk_size, len(df))
-            df.iloc[start:end].to_sql(TABLE_NAME, conn, if_exists="append", index=False)
-            yield int((i + 1) / total_chunks * 100)
-
-
 # --- Инициализация глобальных переменных ---
 df_2025 = load_combined_2025()
 df_2025_clean = df_2025[~df_2025["Аномалия"]].copy() if not df_2025.empty else pd.DataFrame()
@@ -644,7 +606,6 @@ app.layout = html.Div([
     html.H1("Анализ складских данных"),
 
     dcc.Tabs(id="tabs", value="main", children=[
-
         # ===================== Основной анализ =====================
         dcc.Tab(label="Основной анализ", value="main", children=[
             html.Div([
@@ -781,13 +742,6 @@ app.layout = html.Div([
                     'marginTop': 10
                 }),
             ]),
-
-            # --- Новый блок для автозагрузки ---
-            html.Div([
-                html.H3("Прогресс загрузки в БД"),
-                html.Div(id="progress-output", style={'marginBottom': '10px'}),
-                dcc.Interval(id="progress-interval", interval=1000, n_intervals=0, disabled=True),
-            ], style={'marginTop': 30})
         ]),
 
         # ===================== Вкладка 2025 =====================
@@ -980,6 +934,8 @@ app.layout = html.Div([
                             {"label": "Топ-100", "value": 100},
                             {"label": "Топ-250", "value": 250},
                             {"label": "Топ-500", "value": 500},
+                            {"label": "Топ-500", "value": 1000},
+                            {"label": "Топ-500", "value": 2000},
                             {"label": "Топ-1000", "value": 1000},
                             {"label": "Топ-2000", "value": 2000},
                         ],
@@ -1041,128 +997,6 @@ app.layout = html.Div([
 # --------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# ============================================================
-# 📦 Глобальный буфер для текущей загрузки
-# ============================================================
-upload_df = None
-
-
-# ============================================================
-# 📤 Обработка загруженного файла
-# ============================================================
-@app.callback(
-    Output("upload-status", "children"),
-    Output("progress-interval", "disabled"),
-    Input("upload-data", "contents"),
-    State("upload-data", "filename"),
-    prevent_initial_call=True
-)
-def handle_upload(content, filename):
-    """Обрабатывает загруженный Excel-файл и готовит к вставке в БД."""
-    global upload_df
-
-    if not content:
-        return "❌ Файл не загружен", True
-
-    log.info(f"📂 Получен файл: {filename}")
-    last_date = get_last_date_in_db()
-    file_date = extract_date_from_filename(filename)
-
-    if not file_date:
-        return "⚠️ Не удалось определить дату из имени файла", True
-
-    log.info(f"📅 Последняя дата в БД: {last_date}, файл за {file_date}")
-
-    if last_date and file_date <= last_date:
-        return f"⚠️ Файл {filename} содержит старые данные (до {last_date})", True
-
-    # 🔹 Декодируем Excel-файл
-    content_type, content_string = content.split(',')
-    decoded = base64.b64decode(content_string)
-
-    try:
-        df = pd.read_excel(io.BytesIO(decoded), dtype=str)
-    except Exception as e:
-        return f"❌ Ошибка чтения Excel: {e}", True
-
-    # 🔹 Очистка
-    df = clean_articles(df)
-
-    sklad_cols = [c for c in df.columns if c.strip().startswith("Остаток")]
-    if not sklad_cols:
-        return f"⚠️ В файле {filename} нет складских колонок (Остаток...)", True
-
-    result = []
-    for col in sklad_cols:
-        temp = df.copy()
-        temp["остаток"] = pd.to_numeric(temp[col], errors="coerce").fillna(0).astype(int)
-        temp["склад"] = col.replace("Остаток", "").strip()
-        temp["дата"] = file_date
-        temp["id"] = [uuid.uuid4() for _ in range(len(temp))]
-        result.append(temp)
-
-    df_new = pd.concat(result, ignore_index=True)
-
-    # 🔹 Загружаем остатки предыдущей даты
-    df_prev = pd.read_sql(
-        text(f"SELECT товар_id, склад, остаток FROM {TABLE_NAME} WHERE дата = :d"),
-        engine,
-        params={"d": last_date}
-    )
-
-    # 🔹 Подсчёт продаж и пополнений
-    df_ready = calc_changes(df_new, df_prev)
-
-    # 🔹 Приведение имён колонок
-    df_ready.rename(columns={
-        "Артикул": "артикул",
-        "Артикул производителя": "артикул_производителя",
-        "Наименование": "наименование",
-        "Производитель": "производитель",
-        "Марка": "марка",
-        "Группа": "группа",
-        "Цена": "цена"
-    }, inplace=True)
-
-    upload_df = df_ready
-    log.info(f"📊 Готово к вставке: {len(df_ready):,} строк")
-
-    return f"🔄 Начинается загрузка {len(df_ready):,} строк за {file_date}...", False
-
-
-# ============================================================
-# ⏳ Отслеживание прогресса и запись в базу
-# ============================================================
-@app.callback(
-    Output("progress-output", "children"),
-    Output("upload-status", "children", allow_duplicate=True),
-    Input("progress-interval", "n_intervals"),
-    prevent_initial_call=True
-)
-def update_progress(n):
-    """Постепенно записывает данные в базу с отображением прогресса."""
-    global upload_df
-    if upload_df is None or len(upload_df) == 0:
-        return "⚠️ Нет данных для загрузки", "⚠️ Загрузка отменена"
-
-    try:
-        if n == 0:
-            update_progress.generator = save_to_db(upload_df)
-
-        percent = next(update_progress.generator)
-        return f"⏳ Загрузка: {percent}%", f"Загрузка выполняется..."
-
-    except StopIteration:
-        upload_df = None  # Очистить буфер
-        last_date = get_last_date_in_db()
-        return f"✅ Загрузка завершена на 100%", f"✅ Последняя дата в БД: {last_date}"
-
-    except Exception as e:
-        upload_df = None
-        log.error(f"❌ Ошибка загрузки: {e}")
-        return f"❌ Ошибка: {e}", "❌ Ошибка при загрузке данных"
-
 
 # -------------------- Колбэк для фильтров --------------------
 # ---- Dash callbacks: фильтры (load_filters) ----
@@ -2318,7 +2152,7 @@ def download_2025_excel(n_clicks, sklad, article, month):
     except Exception as e:
         print(f"[download_2025_excel] ERROR: {e}", e.__class__)
         return dash.no_update
-        
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))  # Используем порт из переменной окружения или 10000 по умолчанию
     app.run_server(debug=False, host='0.0.0.0', port=port)
