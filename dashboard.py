@@ -87,6 +87,55 @@ unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()
 # --- Подключение к Railway ---
 DB_URL = "postgresql://postgres:SyngvjjliGqUBYDKibMmoOWCVUZVdFjc@tramway.proxy.rlwy.net:13502/railway"
 engine = create_engine(DB_URL, pool_pre_ping=True)
+TABLE_NAME = "alyans_refresh_v3"
+
+# -------------------- Глобальный буфер --------------------
+upload_df = None
+# -------------------- Вспомогательные функции --------------------
+def clean_articles(df: pd.DataFrame) -> pd.DataFrame:
+    """Минимальная очистка: убираем пробелы, приводим к строкам"""
+    df = df.copy()
+    df.columns = [c.strip() for c in df.columns]
+    str_cols = df.select_dtypes(include="object").columns
+    for c in str_cols:
+        df[c] = df[c].str.strip()
+    return df
+
+def calc_changes(df_new: pd.DataFrame, df_prev: pd.DataFrame) -> pd.DataFrame:
+    """Расчет продано и пополнено"""
+    df = df_new.merge(df_prev[["товар_id", "склад", "остаток"]], 
+                      on=["товар_id", "склад"], how="left", suffixes=("", "_вчера"))
+    df["продано"] = (df["остаток_вчера"] - df["остаток"]).clip(lower=0).fillna(0).astype(int)
+    df["пополнение"] = (df["остаток"] - df["остаток_вчера"]).clip(lower=0).fillna(0).astype(int)
+    df.drop(columns=["остаток_вчера"], inplace=True)
+    return df
+
+def get_last_date_in_db() -> datetime.date | None:
+    """Возвращает последнюю дату из таблицы"""
+    with engine.connect() as conn:
+        last_date = conn.execute(text(f"SELECT MAX(дата) FROM {TABLE_NAME}")).scalar()
+    if last_date is None:
+        return None
+    return pd.to_datetime(last_date).date()
+
+def extract_date_from_filename(filename: str) -> datetime.date | None:
+    """Парсит дату из имени файла вида 'dd.mm.xlsx'"""
+    match = re.search(r'(\d{1,2})\.(\d{1,2})', filename)
+    if not match:
+        return None
+    day, month = map(int, match.groups())
+    return datetime(2025, month, day).date()  # год можно менять
+
+def save_to_db(df: pd.DataFrame, chunk_size: int = 50000):
+    """Генератор по частичной записи в базу"""
+    total_chunks = math.ceil(len(df) / chunk_size)
+    with engine.begin() as conn:
+        for i in range(total_chunks):
+            start = i * chunk_size
+            end = min(start + chunk_size, len(df))
+            df.iloc[start:end].to_sql(TABLE_NAME, conn, if_exists="append", index=False)
+            yield int((i + 1) / total_chunks * 100)
+
 
 
 def _ensure_list(value):
@@ -884,11 +933,33 @@ app.layout = html.Div([
             ])
         ]),
 
-        # ===================== Вкладка Альянс =====================
+    # ===================== Вкладка Альянс =====================
         dcc.Tab(label="Альянс", value="alyans", children=[
             html.Div([
                 html.H2("Анализ данных Альянс"),
 
+                # Загрузка Excel
+                html.H4("Загрузка данных"),
+                dcc.Upload(
+                    id='upload-alyans-data',
+                    children=html.Div(['Перетащите файл сюда или ', html.A('выберите файл')]),
+                    style={
+                        'width': '100%',
+                        'height': '60px',
+                        'lineHeight': '60px',
+                        'borderWidth': '1px',
+                        'borderStyle': 'dashed',
+                        'borderRadius': '5px',
+                        'textAlign': 'center',
+                        'marginBottom': '10px'
+                    },
+                    multiple=False
+                ),
+                html.Div(id="upload-alyans-status", style={'marginBottom': '10px', 'color': 'green'}),
+                dcc.Interval(id='alyans-progress-interval', interval=500, disabled=True),
+                html.Div(id="alyans-progress-output", style={'marginBottom': '20px', 'color': 'blue'}),
+
+                # Фильтры
                 html.Label("Проект:"),
                 dcc.Dropdown(
                     id="project-filter",
@@ -908,7 +979,8 @@ app.layout = html.Div([
                     id="alyans-sklad",
                     multi=True,
                     options=[{"label": s, "value": s} for s in _ensure_list(get_unique_sklads())],
-                    placeholder="Выберите склад"
+                    placeholder="Выберите склад",
+                    style={"marginBottom": "15px"}
                 ),
 
                 html.Label("Группа:"),
@@ -916,9 +988,11 @@ app.layout = html.Div([
                     id="alyans-group",
                     multi=True,
                     options=[{"label": g, "value": g} for g in _ensure_list(get_unique_groups())],
-                    placeholder="Выберите группу"
+                    placeholder="Выберите группу",
+                    style={"marginBottom": "20px"}
                 ),
 
+                # График
                 html.H3("Динамика остатков и продаж по выбранному товару"),
                 dcc.Loading(
                     id="loading-alyans-graph",
@@ -926,6 +1000,7 @@ app.layout = html.Div([
                     children=dcc.Graph(id="alyans-graph")
                 ),
 
+                # Размер ТОПа
                 html.Div([
                     html.Label("Размер ТОПа:"),
                     dcc.RadioItems(
@@ -934,8 +1009,6 @@ app.layout = html.Div([
                             {"label": "Топ-100", "value": 100},
                             {"label": "Топ-250", "value": 250},
                             {"label": "Топ-500", "value": 500},
-                            {"label": "Топ-500", "value": 1000},
-                            {"label": "Топ-500", "value": 2000},
                             {"label": "Топ-1000", "value": 1000},
                             {"label": "Топ-2000", "value": 2000},
                         ],
@@ -946,6 +1019,7 @@ app.layout = html.Div([
 
                 html.H3(id="alyans-top-title", style={"marginTop": "20px"}),
 
+                # Таблица
                 dcc.Loading(
                     id="loading-alyans-table",
                     type="circle",
@@ -978,6 +1052,7 @@ app.layout = html.Div([
                     )
                 ),
 
+                # Кнопка выгрузки
                 html.Div([
                     dbc.Button(
                         "📥 Выгрузить в Excel (с учётом фильтров)",
@@ -997,6 +1072,99 @@ app.layout = html.Div([
 # --------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# -------------------- Колбэк загрузки --------------------
+@app.callback(
+    Output("upload-alyans-status", "children"),
+    Output("alyans-progress-interval", "disabled"),
+    Input("upload-alyans-data", "contents"),
+    State("upload-alyans-data", "filename"),
+    prevent_initial_call=True
+)
+def handle_alyans_upload(content, filename):
+    """Обрабатывает Excel и готовит данные для вкладки Альянс"""
+    global upload_alyans_df
+    if not content:
+        return "❌ Файл не загружен", True
+
+    last_date = get_last_date_in_db()
+    file_date = extract_date_from_filename(filename)
+    if not file_date:
+        return "⚠️ Не удалось определить дату из имени файла", True
+    if last_date and file_date <= last_date:
+        return f"⚠️ Файл {filename} содержит старые данные (до {last_date})", True
+
+    # Декодируем Excel
+    content_type, content_string = content.split(',')
+    decoded = base64.b64decode(content_string)
+    try:
+        df = pd.read_excel(io.BytesIO(decoded), dtype=str)
+    except Exception as e:
+        return f"❌ Ошибка чтения Excel: {e}", True
+
+    df = clean_articles(df)
+
+    sklad_cols = [c for c in df.columns if c.strip().startswith("Остаток")]
+    if not sklad_cols:
+        return f"⚠️ В файле нет колонок Остаток...", True
+
+    result = []
+    for col in sklad_cols:
+        temp = df.copy()
+        temp["остаток"] = pd.to_numeric(temp[col], errors="coerce").fillna(0).astype(int)
+        temp["склад"] = col.replace("Остаток", "").strip()
+        temp["дата"] = file_date
+        temp["id"] = [uuid.uuid4() for _ in range(len(temp))]
+        result.append(temp)
+
+    df_new = pd.concat(result, ignore_index=True)
+
+    # Загружаем остатки предыдущей даты
+    if last_date:
+        df_prev = pd.read_sql(
+            text(f"SELECT товар_id, склад, остаток FROM {TABLE_NAME} WHERE дата = :d"),
+            engine,
+            params={"d": last_date}
+        )
+    else:
+        df_prev = pd.DataFrame(columns=["товар_id", "склад", "остаток"])
+
+    df_ready = calc_changes(df_new, df_prev)
+    upload_alyans_df = df_ready
+
+    return f"🔄 Начинается загрузка {len(df_ready):,} строк за {file_date}...", False
+
+# -------------------- Колбэк прогресса для Альянса --------------------
+@app.callback(
+    Output("alyans-progress-output", "children"),
+    Output("upload-alyans-status", "children", allow_duplicate=True),
+    Input("alyans-progress-interval", "n_intervals"),
+    prevent_initial_call=True
+)
+def update_alyans_progress(n):
+    """Пошаговая запись данных в базу для Альянса"""
+    global upload_alyans_df
+    if upload_alyans_df is None or len(upload_alyans_df) == 0:
+        return "⚠️ Нет данных для загрузки", "⚠️ Загрузка отменена"
+
+    try:
+        if n == 0:
+            # Создаем генератор для пошаговой записи
+            update_alyans_progress.generator = save_to_db(upload_alyans_df)
+
+        percent = next(update_alyans_progress.generator)
+        return f"⏳ Загрузка: {percent}%", f"Загрузка выполняется..."
+
+    except StopIteration:
+        upload_alyans_df = None
+        last_date = get_last_date_in_db()
+        return f"✅ Загрузка завершена на 100%", f"✅ Последняя дата в БД: {last_date}"
+
+    except Exception as e:
+        upload_alyans_df = None
+        return f"❌ Ошибка: {e}", "❌ Ошибка при загрузке данных"
+
 
 # -------------------- Колбэк для фильтров --------------------
 # ---- Dash callbacks: фильтры (load_filters) ----
