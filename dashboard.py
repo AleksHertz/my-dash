@@ -29,7 +29,7 @@ from github import Github, InputGitTreeElement
 import uuid
 import time
 import threading
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 import subprocess
 import psycopg2
 from sqlalchemy import create_engine, text
@@ -37,6 +37,7 @@ from collections import defaultdict
 from sqlalchemy.exc import OperationalError
 import re
 from difflib import get_close_matches
+from datetime import date
 from typing import Optional
 # --------------------
 # НАСТРОЙКИ
@@ -119,7 +120,7 @@ def get_last_date_in_db() -> Optional[date]:
         return None
     return pd.to_datetime(last_date).date()
 
-def extract_date_from_filename(filename: str) -> datetime.date | None:
+def extract_date_from_filename(filename: str) -> Optional[date]:
     """Парсит дату из имени файла вида 'dd.mm.xlsx'"""
     match = re.search(r'(\d{1,2})\.(\d{1,2})', filename)
     if not match:
