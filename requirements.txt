@@ -12,5 +12,7 @@ xlrd
 PyGithub
 psycopg2-binary
 SQLAlchemy
+tabulate
+
 
 
