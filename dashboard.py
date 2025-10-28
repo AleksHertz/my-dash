@@ -88,6 +88,7 @@ unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()
 # --- Подключение к Railway ---
 DB_URL = "postgresql://postgres:SyngvjjliGqUBYDKibMmoOWCVUZVdFjc@tramway.proxy.rlwy.net:13502/railway"
 engine = create_engine(DB_URL, pool_pre_ping=True)
+TABLE_NAME = "alyans_refresh_v3"
 
 # ============================================================
 # Вспомогательные функции
