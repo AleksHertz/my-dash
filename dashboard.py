@@ -29,7 +29,7 @@ from github import Github, InputGitTreeElement
 import uuid
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import subprocess
 import psycopg2
 from sqlalchemy import create_engine, text
@@ -37,6 +37,7 @@ from collections import defaultdict
 from sqlalchemy.exc import OperationalError
 import re
 from difflib import get_close_matches
+from typing import Optional
 # --------------------
 # НАСТРОЙКИ
 # --------------------
@@ -110,7 +111,7 @@ def calc_changes(df_new: pd.DataFrame, df_prev: pd.DataFrame) -> pd.DataFrame:
     df.drop(columns=["остаток_вчера"], inplace=True)
     return df
 
-def get_last_date_in_db() -> datetime.date | None:
+def get_last_date_in_db() -> Optional[date]:
     """Возвращает последнюю дату из таблицы"""
     with engine.connect() as conn:
         last_date = conn.execute(text(f"SELECT MAX(дата) FROM {TABLE_NAME}")).scalar()
