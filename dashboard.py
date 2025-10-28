@@ -94,39 +94,6 @@ unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()
 # Вспомогательные функции
 # ============================================================
 
-def get_last_date_in_db():
-    """Возвращает последнюю дату из таблицы."""
-    with engine.connect() as conn:
-        last_date = conn.execute(text(f"SELECT MAX(дата) FROM {TABLE_NAME}")).scalar()
-    return last_date
-
-def extract_date_from_filename(filename):
-    match = re.search(r'(\d{1,2})\.(\d{1,2})', filename)
-    if not match:
-        return None
-    day, month = map(int, match.groups())
-    return datetime(2025, month, day).date()
-
-def calc_changes(df_new, df_prev):
-    df = df_new.merge(df_prev[["товар_id", "склад", "остаток"]], 
-                      on=["товар_id", "склад"], how="left", suffixes=("", "_вчера"))
-    df["продано"] = (df["остаток_вчера"] - df["остаток"]).clip(lower=0).fillna(0).astype(int)
-    df["пополнение"] = (df["остаток"] - df["остаток_вчера"]).clip(lower=0).fillna(0).astype(int)
-    df.drop(columns=["остаток_вчера"], inplace=True)
-    return df
-
-def save_to_db(df):
-    chunk_size = 50000
-    total_chunks = math.ceil(len(df) / chunk_size)
-    with engine.begin() as conn:
-        for i in range(total_chunks):
-            start = i * chunk_size
-            end = min(start + chunk_size, len(df))
-            df.iloc[start:end].to_sql(TABLE_NAME, conn, if_exists="append", index=False)
-            yield int((i + 1) / total_chunks * 100)
-
-
-
 def _ensure_list(value):
     """Гарантирует, что значение является списком."""
     if value is None:
@@ -625,6 +592,39 @@ def github_upload_file(local_path: str, target_path: str, commit_message: str) -
         logging.error(f"[github_upload_file] Ошибка загрузки {target_path}: {e}", exc_info=True)
         print(f"[github_upload_file] Ошибка загрузки {target_path}: {e}")
         return False
+
+
+# --- Функция загрузки файла в БД (универсальная) ---
+def get_last_date_in_db():
+    """Возвращает последнюю дату из таблицы."""
+    with engine.connect() as conn:
+        last_date = conn.execute(text(f"SELECT MAX(дата) FROM {TABLE_NAME}")).scalar()
+    return last_date
+
+def extract_date_from_filename(filename):
+    match = re.search(r'(\d{1,2})\.(\d{1,2})', filename)
+    if not match:
+        return None
+    day, month = map(int, match.groups())
+    return datetime(2025, month, day).date()
+
+def calc_changes(df_new, df_prev):
+    df = df_new.merge(df_prev[["товар_id", "склад", "остаток"]], 
+                      on=["товар_id", "склад"], how="left", suffixes=("", "_вчера"))
+    df["продано"] = (df["остаток_вчера"] - df["остаток"]).clip(lower=0).fillna(0).astype(int)
+    df["пополнение"] = (df["остаток"] - df["остаток_вчера"]).clip(lower=0).fillna(0).astype(int)
+    df.drop(columns=["остаток_вчера"], inplace=True)
+    return df
+
+def save_to_db(df):
+    chunk_size = 50000
+    total_chunks = math.ceil(len(df) / chunk_size)
+    with engine.begin() as conn:
+        for i in range(total_chunks):
+            start = i * chunk_size
+            end = min(start + chunk_size, len(df))
+            df.iloc[start:end].to_sql(TABLE_NAME, conn, if_exists="append", index=False)
+            yield int((i + 1) / total_chunks * 100)
 
 
 # --- Инициализация глобальных переменных ---
