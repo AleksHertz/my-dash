@@ -97,31 +97,41 @@ dry_run_summary = None  # Для отображения результатов �
 
 # -------------------- Очистка данных --------------------
 def clean_articles(df: pd.DataFrame) -> pd.DataFrame:
+    """Очистка текстовых полей (артикулы, наименование, производитель и т.д.)"""
     df = df.copy()
     df = df.loc[:, ~df.columns.duplicated()]
+
     text_cols = ["Артикул", "Артикул производителя", "Наименование", "Производитель", "Марка", "Группа"]
+
     for col in text_cols:
         if col not in df.columns:
             df[col] = ""
-        df[col] = (
-            df[col].astype(str)
-            .fillna("")
-            .replace(["nan", "None"], "", regex=False)
-            .str.strip()
-            .str.replace('"', "", regex=False)
-            .str.replace("'", "", regex=False)
-            .str.replace(r"\s+", " ", regex=True)
-        )
+        else:
+            # ✅ Безопасная очистка — без падений при NaN, float и т.д.
+            df[col] = (
+                df[col]
+                .astype(str)
+                .replace(["nan", "None", "NaT"], "", regex=False)
+                .fillna("")
+                .str.strip()
+                .str.replace('"', "", regex=False)
+                .str.replace("'", "", regex=False)
+                .str.replace(r"\s+", " ", regex=True)
+            )
 
+    # ✅ Восстановление отсутствующих артикулов
     df.loc[(df["Артикул"] == "") & (df["Артикул производителя"] != ""), "Артикул"] = df["Артикул производителя"]
     df.loc[(df["Артикул производителя"] == "") & (df["Артикул"] != ""), "Артикул производителя"] = df["Артикул"]
 
+    # ✅ Создание уникального ID товара
     df["товар_id"] = (
-        df["Артикул"].astype(str).str.strip() + "_" +
-        df["Артикул производителя"].astype(str).str.strip() + "_" +
-        df["Наименование"].astype(str).str.strip()
+        df["Артикул"].astype(str).str.strip()
+        + "_" + df["Артикул производителя"].astype(str).str.strip()
+        + "_" + df["Наименование"].astype(str).str.strip()
     ).str.replace(r"\s+", "_", regex=True).str[:255]
+
     return df
+
 
 
 # -------------------- Вспомогательные --------------------
