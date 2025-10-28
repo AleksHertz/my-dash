@@ -644,6 +644,7 @@ app.layout = html.Div([
     html.H1("Анализ складских данных"),
 
     dcc.Tabs(id="tabs", value="main", children=[
+
         # ===================== Основной анализ =====================
         dcc.Tab(label="Основной анализ", value="main", children=[
             html.Div([
@@ -780,6 +781,13 @@ app.layout = html.Div([
                     'marginTop': 10
                 }),
             ]),
+
+            # --- Новый блок для автозагрузки ---
+            html.Div([
+                html.H3("Прогресс загрузки в БД"),
+                html.Div(id="progress-output", style={'marginBottom': '10px'}),
+                dcc.Interval(id="progress-interval", interval=1000, n_intervals=0, disabled=True),
+            ], style={'marginTop': 30})
         ]),
 
         # ===================== Вкладка 2025 =====================
@@ -927,56 +935,6 @@ app.layout = html.Div([
             html.Div([
                 html.H2("Анализ данных Альянс"),
 
-                # ----------------- Секция загрузки (встроена в Альянс) -----------------
-                html.Div([
-                    html.H4("📤 Загрузка Excel в базу (Альянс)"),
-                    html.Div([
-                        html.Span(
-                            id="db-last-date-display",
-                            children=f"📅 Последняя дата в базе: {get_last_date_in_db()}",
-                            style={"fontSize": "14px", "color": "#555"}
-                        )
-                    ], style={"marginBottom": "12px"}),
-
-                    dcc.Upload(
-                        id='alyans-upload',
-                        children=html.Div([
-                            'Перетащите файл сюда или ',
-                            html.A('выберите файл')
-                        ]),
-                        style={
-                            'width': '100%',
-                            'height': '90px',
-                            'lineHeight': '90px',
-                            'borderWidth': '1px',
-                            'borderStyle': 'dashed',
-                            'borderRadius': '6px',
-                            'textAlign': 'center',
-                            'backgroundColor': '#fafafa',
-                            'marginBottom': '12px'
-                        },
-                        multiple=False
-                    ),
-
-                    dbc.Row([
-                        dbc.Col(dbc.Button("Запустить загрузку", id="alyans-start-upload", color="primary"), width="auto"),
-                        dbc.Col(dbc.Button("Отменить", id="alyans-cancel-upload", color="danger", outline=True), width="auto"),
-                        dbc.Col(html.Div(id="alyans-upload-filename", style={"marginLeft": "10px", "alignSelf": "center"}), width=True)
-                    ], style={"gap": "10px", "alignItems": "center", "marginBottom": "10px"}),
-
-                    dbc.Progress(id="alyans-upload-progress", value=0, striped=True, animated=True, style={"height": "24px", "display": "none"}),
-                    html.Div(id="alyans-upload-status", style={"marginTop": "8px", "fontWeight": "600"}),
-                    html.Div(id="alyans-upload-finished", style={"marginTop": "8px", "color": "green", "fontWeight": "700"}),
-
-                    html.Hr()
-                ], style={
-                    "padding": "18px",
-                    "backgroundColor": "white",
-                    "border": "1px solid #ddd",
-                    "borderRadius": "8px",
-                    "marginBottom": "20px"
-                }),
-
                 html.Label("Проект:"),
                 dcc.Dropdown(
                     id="project-filter",
@@ -1077,7 +1035,6 @@ app.layout = html.Div([
         ]),
     ])
 ])
-
 
 # --------------------
 # КОЛБЭКИ
