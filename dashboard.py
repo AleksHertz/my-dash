@@ -91,23 +91,27 @@ DB_URL = "postgresql://postgres:SyngvjjliGqUBYDKibMmoOWCVUZVdFjc@tramway.proxy.r
 engine = create_engine(DB_URL, pool_pre_ping=True)
 TABLE_NAME = "alyans_refresh_v3"
 
-# -------------------- Глобальный буфер --------------------
+# ===============================================================
+# ========== Глобальные переменные и состояния =================
+# ===============================================================
 upload_alyans_df = None
-dry_run_summary = None  # Для отображения результатов проверки
+dry_run_summary = None
+progress_state = {"status": "idle", "progress": 0, "message": "", "last_update": None}
 
-# -------------------- Очистка данных --------------------
+
+# ===============================================================
+# ========== Очистка данных =====================================
+# ===============================================================
 def clean_articles(df: pd.DataFrame) -> pd.DataFrame:
-    """Очистка текстовых полей (артикулы, наименование, производитель и т.д.)"""
+    """Очистка и стандартизация текстовых полей"""
     df = df.copy()
     df = df.loc[:, ~df.columns.duplicated()]
-
     text_cols = ["Артикул", "Артикул производителя", "Наименование", "Производитель", "Марка", "Группа"]
 
     for col in text_cols:
         if col not in df.columns:
             df[col] = ""
         else:
-            # ✅ Безопасная очистка — без падений при NaN, float и т.д.
             df[col] = (
                 df[col]
                 .astype(str)
@@ -119,11 +123,11 @@ def clean_articles(df: pd.DataFrame) -> pd.DataFrame:
                 .str.replace(r"\s+", " ", regex=True)
             )
 
-    # ✅ Восстановление отсутствующих артикулов
+    # Восстановление артикулов
     df.loc[(df["Артикул"] == "") & (df["Артикул производителя"] != ""), "Артикул"] = df["Артикул производителя"]
     df.loc[(df["Артикул производителя"] == "") & (df["Артикул"] != ""), "Артикул производителя"] = df["Артикул"]
 
-    # ✅ Создание уникального ID товара
+    # Уникальный ID
     df["товар_id"] = (
         df["Артикул"].astype(str).str.strip()
         + "_" + df["Артикул производителя"].astype(str).str.strip()
@@ -133,8 +137,9 @@ def clean_articles(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-
-# -------------------- Вспомогательные --------------------
+# ===============================================================
+# ========== Вспомогательные функции =============================
+# ===============================================================
 def get_last_date_in_db() -> Optional[date]:
     with engine.connect() as conn:
         last_date = conn.execute(text(f"SELECT MAX(дата) FROM {TABLE_NAME}")).scalar()
@@ -142,7 +147,7 @@ def get_last_date_in_db() -> Optional[date]:
 
 
 def extract_date_from_filename(filename: str) -> Optional[date]:
-    match = re.search(r'(\d{1,2})\.(\d{1,2})', filename)
+    match = re.search(r"(\d{1,2})\.(\d{1,2})", filename)
     if not match:
         return None
     day, month = map(int, match.groups())
@@ -150,8 +155,12 @@ def extract_date_from_filename(filename: str) -> Optional[date]:
 
 
 def calc_changes(df_new: pd.DataFrame, df_prev: pd.DataFrame) -> pd.DataFrame:
-    df = df_new.merge(df_prev[["товар_id", "склад", "остаток"]], 
-                      on=["товар_id", "склад"], how="left", suffixes=("", "_вчера"))
+    df = df_new.merge(
+        df_prev[["товар_id", "склад", "остаток"]],
+        on=["товар_id", "склад"],
+        how="left",
+        suffixes=("", "_вчера"),
+    )
     df["продано"] = (df["остаток_вчера"] - df["остаток"]).clip(lower=0).fillna(0).astype(int)
     df["пополнение"] = (df["остаток"] - df["остаток_вчера"]).clip(lower=0).fillna(0).astype(int)
     df.drop(columns=["остаток_вчера"], inplace=True)
@@ -159,6 +168,7 @@ def calc_changes(df_new: pd.DataFrame, df_prev: pd.DataFrame) -> pd.DataFrame:
 
 
 def save_to_db(df: pd.DataFrame, chunk_size: int = 50000):
+    """Пошаговая запись в БД с yield прогресса"""
     temp_table = f"{TABLE_NAME}_temp"
     total_chunks = math.ceil(len(df) / chunk_size)
     with engine.begin() as conn:
@@ -167,8 +177,7 @@ def save_to_db(df: pd.DataFrame, chunk_size: int = 50000):
             SELECT * FROM {TABLE_NAME} WHERE 1=0;
         """))
         for i in range(total_chunks):
-            start = i * chunk_size
-            end = min(start + chunk_size, len(df))
+            start, end = i * chunk_size, min((i + 1) * chunk_size, len(df))
             df.iloc[start:end].to_sql(temp_table, conn, if_exists="append", index=False)
             yield int((i + 1) / total_chunks * 100)
         conn.execute(text(f"""
@@ -176,6 +185,80 @@ def save_to_db(df: pd.DataFrame, chunk_size: int = 50000):
             DROP TABLE {temp_table};
         """))
 
+
+# ===============================================================
+# ========== Асинхронная обработка файла =========================
+# ===============================================================
+def process_alyans_upload(content, filename):
+    """Асинхронная обработка: чтение, очистка, расчет, подготовка"""
+    global upload_alyans_df, dry_run_summary, progress_state
+
+    try:
+        progress_state.update({"status": "processing", "progress": 0, "message": "Чтение Excel..."})
+        time.sleep(0.5)
+
+        content_type, content_string = content.split(",")
+        decoded = base64.b64decode(content_string)
+        df = pd.read_excel(io.BytesIO(decoded), dtype=str)
+        progress_state["progress"] = 15
+        progress_state["message"] = "Очистка данных..."
+
+        df = clean_articles(df)
+        progress_state["progress"] = 30
+
+        # Проверяем наличие остатков
+        sklad_cols = [c for c in df.columns if c.strip().startswith("Остаток")]
+        if not sklad_cols:
+            raise ValueError("Нет колонок Остаток в файле")
+
+        # Извлекаем дату
+        last_date = get_last_date_in_db()
+        file_date = extract_date_from_filename(filename)
+        if not file_date:
+            raise ValueError("Не удалось определить дату из имени файла")
+        if last_date and file_date <= last_date:
+            raise ValueError(f"Файл содержит старые данные (до {last_date})")
+
+        progress_state["message"] = "Формирование набора остатков..."
+        result = []
+        for col in sklad_cols:
+            temp = df.copy()
+            temp["остаток"] = pd.to_numeric(temp[col], errors="coerce").fillna(0).astype(int)
+            temp["склад"] = col.replace("Остаток", "").strip()
+            temp["дата"] = file_date
+            temp["id"] = [uuid.uuid4() for _ in range(len(temp))]
+            result.append(temp)
+
+        df_new = pd.concat(result, ignore_index=True)
+        progress_state["progress"] = 50
+        progress_state["message"] = "Загрузка остатков из БД..."
+
+        df_prev = pd.read_sql(
+            text(f"SELECT товар_id, склад, остаток FROM {TABLE_NAME} WHERE дата = :d"),
+            engine,
+            params={"d": last_date},
+        ) if last_date else pd.DataFrame(columns=["товар_id", "склад", "остаток"])
+
+        progress_state["message"] = "Расчет изменений..."
+        df_ready = calc_changes(df_new, df_prev)
+        progress_state["progress"] = 90
+
+        upload_alyans_df = df_ready
+        dry_run_summary = df_ready.head(5).to_html(index=False)
+
+        progress_state.update({
+            "status": "done",
+            "progress": 100,
+            "message": f"✅ Проверка завершена — {len(df_ready):,} строк",
+            "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+    except Exception as e:
+        progress_state.update({
+            "status": "error",
+            "progress": 0,
+            "message": f"❌ Ошибка: {e}"
+        })
 
 
 
@@ -1143,7 +1226,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# -------------------- 1️⃣ Проверка файла (Dry Run) --------------------
+# ===============================================================
+# ========== 1️⃣ Загрузка файла ==================================
+# ===============================================================
 @app.callback(
     Output("upload-alyans-status", "children"),
     Output("dry-run-output", "children"),
@@ -1154,99 +1239,52 @@ logger = logging.getLogger(__name__)
     prevent_initial_call=True
 )
 def handle_alyans_upload(content, filename):
-    global upload_alyans_df, dry_run_summary
     if not content:
         return "❌ Файл не загружен", "", {"display": "none"}, True
 
-    last_date = get_last_date_in_db()
-    file_date = extract_date_from_filename(filename)
-    if not file_date:
-        return "⚠️ Не удалось определить дату из имени файла", "", {"display": "none"}, True
-    if last_date and file_date <= last_date:
-        return f"⚠️ Файл {filename} содержит старые данные (до {last_date})", "", {"display": "none"}, True
-
-    # Читаем Excel
-    content_type, content_string = content.split(',')
-    decoded = base64.b64decode(content_string)
-    try:
-        df = pd.read_excel(io.BytesIO(decoded), dtype=str)
-    except Exception as e:
-        return f"❌ Ошибка чтения Excel: {e}", "", {"display": "none"}, True
-
-    df = clean_articles(df)
-    sklad_cols = [c for c in df.columns if c.strip().startswith("Остаток")]
-    if not sklad_cols:
-        return "⚠️ Нет колонок Остаток в файле", "", {"display": "none"}, True
-
-    result = []
-    for col in sklad_cols:
-        temp = df.copy()
-        temp["остаток"] = pd.to_numeric(temp[col], errors="coerce").fillna(0).astype(int)
-        temp["склад"] = col.replace("Остаток", "").strip()
-        temp["дата"] = file_date
-        temp["id"] = [uuid.uuid4() for _ in range(len(temp))]
-        result.append(temp)
-
-    df_new = pd.concat(result, ignore_index=True)
-
-    # Загружаем остатки предыдущего дня
-    df_prev = pd.read_sql(
-        text(f"SELECT товар_id, склад, остаток FROM {TABLE_NAME} WHERE дата = :d"),
-        engine,
-        params={"d": last_date}
-    ) if last_date else pd.DataFrame(columns=["товар_id", "склад", "остаток"])
-
-    df_ready = calc_changes(df_new, df_prev)
-    upload_alyans_df = df_ready
-
-    # Результаты dry run
-    dry_run_summary = df_ready.head(5).to_html(index=False)
-    summary_text = html.Div([
-        html.P(f"🗓 Дата файла: {file_date}"),
-        html.P(f"📊 Количество строк: {len(df_ready):,}"),
-        html.P("📋 Пример данных:"),
-        html.Div(dcc.Markdown(f"```{df_ready.head(5).to_markdown(index=False)}```"), style={"maxHeight": "300px", "overflow": "auto"})
-    ])
-
-    return (
-        f"✅ Проверка завершена — всё готово к загрузке ({len(df_ready):,} строк)",
-        summary_text,
-        {"display": "inline-block"},
-        True
-    )
+    # Запускаем фоновую обработку
+    threading.Thread(target=process_alyans_upload, args=(content, filename), daemon=True).start()
+    return f"🚀 Обработка файла '{filename}' запущена...", "", {"display": "none"}, False
 
 
-# -------------------- 2️⃣ Запись в базу (Progress) --------------------
+# ===============================================================
+# ========== 2️⃣ Отображение прогресса обработки =================
+# ===============================================================
 @app.callback(
     Output("alyans-progress-output", "children"),
     Output("upload-alyans-status", "children", allow_duplicate=True),
-    Input("upload-to-db-btn", "n_clicks"),
+    Output("upload-to-db-btn", "style", allow_duplicate=True),
     Input("alyans-progress-interval", "n_intervals"),
     prevent_initial_call=True
 )
-def update_alyans_progress(n_clicks, n_intervals):
-    global upload_alyans_df
-    ctx = dash.callback_context
-    if not ctx.triggered:
+def show_progress(_):
+    global progress_state
+
+    status = progress_state["status"]
+    msg = progress_state["message"]
+    progress = progress_state["progress"]
+
+    if status == "idle":
         raise dash.exceptions.PreventUpdate
 
-    trigger = ctx.triggered[0]["prop_id"].split(".")[0]
+    if status == "processing":
+        return f"⏳ {msg} ({progress}%)", f"{msg} ({progress}%)", {"display": "none"}
 
-    # Кнопка запуска загрузки
-    if trigger == "upload-to-db-btn" and n_clicks > 0:
-        update_alyans_progress.generator = save_to_db(upload_alyans_df)
-        return "🚀 Начинается запись данных...", "Загрузка выполняется..."
+    elif status == "done":
+        preview = html.Div([
+            html.P(progress_state["message"]),
+            html.P(f"📅 Последняя дата в БД: {get_last_date_in_db()}"),
+        ])
+        return (
+            f"✅ {msg}",
+            preview,
+            {"display": "inline-block"},
+        )
 
-    # Прогресс обновления
-    try:
-        percent = next(update_alyans_progress.generator)
-        return f"⏳ Загрузка: {percent}%", f"Идёт запись ({percent}%)"
-    except StopIteration:
-        upload_alyans_df = None
-        return "✅ Загрузка завершена на 100%", f"✅ Последняя дата в БД: {get_last_date_in_db()}"
-    except Exception as e:
-        upload_alyans_df = None
-        return f"❌ Ошибка: {e}", "❌ Ошибка при записи данных"
+    elif status == "error":
+        return f"❌ {msg}", f"❌ {msg}", {"display": "none"}
+
+    raise dash.exceptions.PreventUpdate
 
 
 # -------------------- Колбэк для фильтров --------------------
