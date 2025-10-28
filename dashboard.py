@@ -45,6 +45,11 @@ HEIGHT_PER_BAR = 30  # высота одной строки в px
 MAX_VISIBLE_BARS = 50  # сколько строк показывать без прокрутки
 MAX_HEIGHT = HEIGHT_PER_BAR * MAX_VISIBLE_BARS  # высота контейнера в px
 
+DB_URL = "postgresql://postgres:SyngvjjliGqUBYDKibMmoOWCVUZVdFjc@tramway.proxy.rlwy.net:13502/railway"
+engine = create_engine(DB_URL, pool_pre_ping=True)
+TABLE_NAME = "alyans_refresh_v3"
+
+
 # --------------------
 # ЗАГРУЗКА И ПРЕДОБРАБОТКА (один раз при старте)
 # --------------------
@@ -84,11 +89,6 @@ unique_sklads = df_result['Склад'].dropna().unique().tolist() if not df_res
 unique_peak_sklads = sorted(df_peaks['Склад'].dropna().unique()) if not df_peaks.empty else []
 unique_peak_articles = sorted(df_peaks['Артикул'].dropna().unique()) if not df_peaks.empty else []
 unique_peak_noms = sorted(df_peaks['Номенклатура'].dropna().unique()) if not df_peaks.empty else []
-
-# --- Подключение к Railway ---
-DB_URL = "postgresql://postgres:SyngvjjliGqUBYDKibMmoOWCVUZVdFjc@tramway.proxy.rlwy.net:13502/railway"
-engine = create_engine(DB_URL, pool_pre_ping=True)
-TABLE_NAME = "alyans_refresh_v3"
 
 # ============================================================
 # Вспомогательные функции
