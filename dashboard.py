@@ -322,33 +322,18 @@ def get_unique_groups():
 
 # ---------- ТОП товаров ----------
 def get_top_products(top_n=100, sklads=None, groups=None, project=None):
-    """
-    Возвращает ТОП товаров по продажам с фильтрами.
-    """
-    try:
-        # --- ✅ Надёжная обработка top_n ---
-        if top_n in [None, "", "None"]:
-            top_n = 100
-        else:
-            try:
-                top_n = int(top_n)
-            except (ValueError, TypeError):
-                top_n = 100
+    sklads = _ensure_list(sklads)
+    groups = _ensure_list(groups)
+    params = {"top_n": int(top_n)}
+    where = ["1=1"]
 
-        sklads = _ensure_list(sklads)
-        groups = _ensure_list(groups)
-        params = {"top_n": top_n}
-        where = ["1=1"]
+    if sklads:
+        where.append("склад = ANY(:sklads)")
+        params["sklads"] = sklads
 
-        # --- 🔹 Фильтр по складам ---
-        if sklads:
-            where.append("склад = ANY(:sklads)")
-            params["sklads"] = sklads
-
-        # --- 🔹 Фильтр по группам ---
-        if groups:
-            where.append("группа = ANY(:groups)")
-            params["groups"] = groups
+    if groups:
+        where.append("группа = ANY(:groups)")
+        params["groups"] = groups
 
         # --- 🔹 Проектные группы ---
         korea_groups = [
@@ -406,34 +391,41 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
             return pd.DataFrame()
 
         where_clause = " AND ".join(where)
-        aggregate = len(sklads) > 1
+    aggregate = len(sklads) > 1
 
+    try:
         with engine.connect() as conn:
             if aggregate:
                 sql = f"""
-                    SELECT товар_id, артикул, наименование,
+                    SELECT товар_id,
+                           артикул,
+                           артикул_производителя,
+                           наименование,
                            SUM(продано) AS всего_продано,
                            SUM(пополнение) AS всего_пополнено
                     FROM alyans_refresh_v3
                     WHERE {where_clause}
-                    GROUP BY товар_id, артикул, наименование
+                    GROUP BY товар_id, артикул, артикул_производителя, наименование
                     HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
                     LIMIT :top_n
                 """
             else:
                 sql = f"""
-                    SELECT склад, товар_id, артикул, наименование,
+                    SELECT склад,
+                           товар_id,
+                           артикул,
+                           артикул_производителя,
+                           наименование,
                            SUM(продано) AS всего_продано,
                            SUM(пополнение) AS всего_пополнено
                     FROM alyans_refresh_v3
                     WHERE {where_clause}
-                    GROUP BY склад, товар_id, артикул, наименование
+                    GROUP BY склад, товар_id, артикул, артикул_производителя, наименование
                     HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
                     LIMIT :top_n
                 """
-
             res = conn.execute(text(sql), params)
             df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
@@ -1360,9 +1352,12 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
         return [], [], f"ТОП-{top_n}: нет данных", None
 
     # Добавляем отсутствующие колонки
-    for col in ["артикул", "наименование", "всего_продано", "всего_пополнено", "цена", "склад", "товар_id"]:
-        if col not in df_full.columns:
-            df_full[col] = None
+   for col in ["артикул", "артикул_производителя", "наименование", "всего_продано", "всего_пополнено", "цена", "склад", "товар_id"]:
+    if col not in df_full.columns:
+        df_full[col] = None
+
+# Если есть артикул_производителя — используем его
+df_full["Артикул"] = df_full["артикул_производителя"].fillna(df_full["артикул"])
 
     df_full = df_full.rename(columns={
         "артикул": "Артикул",
