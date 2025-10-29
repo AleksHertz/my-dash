@@ -324,73 +324,76 @@ def get_unique_groups():
 def get_top_products(top_n=100, sklads=None, groups=None, project=None):
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
-    params = {"top_n": int(top_n)}
+    params = {"top_n": int(top_n) if top_n is not None else 100}
     where = ["1=1"]
 
+    # --- Фильтр по складам ---
     if sklads:
         where.append("склад = ANY(:sklads)")
         params["sklads"] = sklads
 
+    # --- Фильтр по группам ---
     if groups:
         where.append("группа = ANY(:groups)")
         params["groups"] = groups
 
-        # --- 🔹 Проектные группы ---
-        korea_groups = [
-            "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
-            "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
-            "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
-            "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
-            "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
-            "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
-            "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
-            "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
-            "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
-            "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
-            "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
-        ]
+    # --- Проектные группы ---
+    korea_groups = [
+        "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
+        "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
+        "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
+        "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
+        "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
+        "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
+        "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
+    ]
 
-        china_groups = [
-            "ПРОЕКТ КАМАЗ ГОРОД\\КИТАЙ-КАМАЗ",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\SHACMAN OE",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\HOWO SITRAK",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ГРУЗОВОЙ OE",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\FAW OE",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ЛЕГКОВОЙ OE",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\DONGFENG ОБЩАЯ\\DONGFENG OE",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\FOTON OE",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-JAC",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ЦС",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-SHACMAN",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-SITRAK",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\КАМАЗ КОМПАС",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\+КИТАЙ ГРУЗОВЫЕ ОПТ-УЦЕНКА",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\+КИТАЙ ГРУЗОВЫЕ ОПТ-ЗАКРЫТО",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\CREATEK",
-            "ПРОЕКТ МАЗ\\КИТАЙ-МАЗ",
-            "ПРОЕКТ ПНЕВМО\\ПНЕВМО-КИТАЙ",
-            "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\WEICHAI",
-        ]
+    china_groups = [
+        "ПРОЕКТ КАМАЗ ГОРОД\\КИТАЙ-КАМАЗ",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\SHACMAN OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\HOWO SITRAK",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ГРУЗОВОЙ OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\FAW OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ЛЕГКОВОЙ OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\DONGFENG ОБЩАЯ\\DONGFENG OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\FOTON OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-JAC",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ЦС",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-SHACMAN",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-SITRAK",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\КАМАЗ КОМПАС",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\+КИТАЙ ГРУЗОВЫЕ ОПТ-УЦЕНКА",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\+КИТАЙ ГРУЗОВЫЕ ОПТ-ЗАКРЫТО",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\CREATEK",
+        "ПРОЕКТ МАЗ\\КИТАЙ-МАЗ",
+        "ПРОЕКТ ПНЕВМО\\ПНЕВМО-КИТАЙ",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\WEICHAI",
+    ]
 
-        # --- 🔹 Обработка фильтра "Проект" ---
-        if project == "Корея":
-            params["start_date"] = (datetime.utcnow().date() - timedelta(days=365))
-            where.append("дата >= :start_date")
-            params["korea_groups"] = korea_groups
-            where.append("группа = ANY(:korea_groups)")
+    # --- Фильтр по проекту ---
+    if project == "Корея":
+        params["start_date"] = datetime.utcnow().date() - timedelta(days=365)
+        where.append("дата >= :start_date")
+        params["korea_groups"] = korea_groups
+        where.append("группа = ANY(:korea_groups)")
+    elif project == "Китай":
+        params["start_date"] = datetime.utcnow().date() - timedelta(days=365)
+        where.append("дата >= :start_date")
+        params["china_groups"] = china_groups
+        where.append("группа = ANY(:china_groups)")
 
-        elif project == "Китай":
-            params["start_date"] = (datetime.utcnow().date() - timedelta(days=365))
-            where.append("дата >= :start_date")
-            params["china_groups"] = china_groups
-            where.append("группа = ANY(:china_groups)")
+    # --- Защита от слишком широкого запроса ---
+    if not sklads and not groups and not project:
+        logger.warning("⚠️ Слишком широкий запрос без фильтров — пропущен.")
+        return pd.DataFrame()
 
-        # --- 🔹 Защита от слишком широкого запроса ---
-        if not sklads and not groups and not project:
-            logger.warning("⚠️ Слишком широкий запрос без фильтров — пропущен.")
-            return pd.DataFrame()
+    # --- Формируем WHERE ---
+    where_clause = " AND ".join(where)
 
-        where_clause = " AND ".join(where)
     aggregate = len(sklads) > 1
 
     try:
@@ -440,7 +443,6 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
     except Exception:
         logger.exception("[get_top_products] Ошибка получения ТОП товаров")
         return pd.DataFrame()
-
 
 
 
