@@ -1352,15 +1352,15 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
         return [], [], f"ТОП-{top_n}: нет данных", None
 
     # Добавляем отсутствующие колонки
-   for col in ["артикул", "артикул_производителя", "наименование", "всего_продано", "всего_пополнено", "цена", "склад", "товар_id"]:
-    if col not in df_full.columns:
-        df_full[col] = None
+    for col in ["артикул", "артикул_производителя", "наименование", "всего_продано",
+                "всего_пополнено", "цена", "склад", "товар_id"]:
+        if col not in df_full.columns:
+            df_full[col] = None
 
-# Если есть артикул_производителя — используем его
-df_full["Артикул"] = df_full["артикул_производителя"].fillna(df_full["артикул"])
+    # Если есть артикул_производителя — используем его, иначе оставляем "артикул"
+    df_full["Артикул"] = df_full["артикул_производителя"].fillna(df_full["артикул"])
 
     df_full = df_full.rename(columns={
-        "артикул": "Артикул",
         "наименование": "Наименование",
         "всего_продано": "Продано",
         "всего_пополнено": "Пополнено",
@@ -1386,6 +1386,7 @@ df_full["Артикул"] = df_full["артикул_производителя"]
     return df_limited.to_dict("records"), [], title, df_full.to_dict("records")
 
 
+
 @app.callback(
     Output("download-full-alyans-xlsx", "data"),
     Input("download-full-alyans-btn", "n_clicks"),
@@ -1399,6 +1400,27 @@ def download_full_alyans_excel(n_clicks, full_table_data):
     df = pd.DataFrame(full_table_data)
     if df.empty:
         return None
+
+    # --- Подставляем артикул производителя ---
+    if "артикул_производителя" in df.columns:
+        df["Артикул"] = df["артикул_производителя"].fillna(df.get("артикул", ""))
+    else:
+        df["Артикул"] = df.get("артикул", "")
+
+    # Переименуем остальные колонки для выгрузки
+    rename_map = {
+        "наименование": "Наименование",
+        "всего_продано": "Продано",
+        "всего_пополнено": "Пополнено",
+        "цена": "Цена",
+        "склад": "Склад",
+        "товар_id": "Товар ID"
+    }
+    df = df.rename(columns=rename_map)
+
+    # Ограничим колонки в правильном порядке
+    columns_order = ["Склад", "Товар ID", "Артикул", "Наименование", "Продано", "Пополнено", "Цена"]
+    df = df[[col for col in columns_order if col in df.columns]]
 
     wb = Workbook()
     ws = wb.active
@@ -1434,6 +1456,7 @@ def download_full_alyans_excel(n_clicks, full_table_data):
     bio.seek(0)
 
     return dcc.send_bytes(bio.getvalue(), "alyans_full_table.xlsx")
+
 
 
 @app.callback(
