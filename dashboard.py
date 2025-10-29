@@ -13,7 +13,7 @@ import numpy as np
 import xlsxwriter
 from openpyxl import load_workbook, Workbook
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Alignment, Font
+from openpyxl.styles import Alignment, Font, numbers
 from openpyxl.utils.dataframe import dataframe_to_rows
 import zipfile
 import requests
@@ -1057,7 +1057,7 @@ app.layout = html.Div([
             ])
         ]),
 
-          # ===================== Вкладка Альянс =====================
+            # ===================== Вкладка Альянс =====================
         dcc.Tab(label="Альянс", value="alyans", children=[
             html.Div([
                 html.H2("Анализ данных Альянс"),
@@ -1204,15 +1204,26 @@ app.layout = html.Div([
                     )
                 ),
 
-                # -------------------- 🔹 Кнопка выгрузки --------------------
+                # -------------------- 🔹 Кнопки выгрузки --------------------
                 html.Div([
                     dbc.Button(
-                        "📥 Выгрузить в Excel (с учётом фильтров)",
+                        "📥 Выгрузить выбранный товар (по графику)",
                         id="download-alyans-btn",
                         color="primary",
-                        className="mt-3"
+                        className="mt-3 me-2"
                     ),
                     dcc.Download(id="download-alyans-xlsx"),
+
+                    dbc.Button(
+                        "📊 Выгрузить всю таблицу ТОП (Excel)",
+                        id="download-full-alyans-btn",
+                        color="secondary",
+                        className="mt-3"
+                    ),
+                    dcc.Download(id="download-full-alyans-xlsx"),
+
+                    # Скрытое хранилище полной таблицы
+                    dcc.Store(id="hidden-full-table")
                 ], style={"marginTop": "20px"})
             ])
         ]),
@@ -1313,10 +1324,13 @@ def load_filters(active_tab):
 # ---------- Колбэки ----------
 # ---------- Колбэки ----------
 
+# ---------- Колбэки ----------
+
 @app.callback(
     Output("alyans-table", "data"),
     Output("alyans-table", "selected_rows"),
     Output("alyans-top-title", "children"),
+    Output("hidden-full-table", "data"),  # <-- Store для полной таблицы
     Input("alyans-sklad", "value"),
     Input("alyans-group", "value"),
     Input("project-filter", "value"),
@@ -1328,38 +1342,37 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
     top_n = int(top_n or 100)
 
     if not sklads and not groups and not selected_project:
-        return [], [], "Выберите склад, группу или проект"
+        return [], [], "Выберите склад, группу или проект", None
 
-    df = get_top_products(
-        top_n=top_n,
+    df_full = get_top_products(
+        top_n=None,  # берем все данные
         sklads=sklads,
         groups=groups,
         project=selected_project
     )
 
-    if df.empty:
-        return [], [], f"ТОП-{top_n}: нет данных"
+    if df_full.empty:
+        return [], [], f"ТОП-{top_n}: нет данных", None
 
     # Добавляем отсутствующие колонки
-    for col in ["артикул", "наименование", "всего_продано", "всего_пополнено", "склад", "товар_id"]:
-        if col not in df.columns:
-            df[col] = None
+    for col in ["артикул", "наименование", "всего_продано", "всего_пополнено", "цена", "склад", "товар_id"]:
+        if col not in df_full.columns:
+            df_full[col] = None
 
-    # Формируем таблицу с отображением нужных полей
-    df = df.rename(columns={
+    df_full = df_full.rename(columns={
         "артикул": "Артикул",
         "наименование": "Наименование",
         "всего_продано": "Продано",
         "всего_пополнено": "Пополнено",
+        "цена": "Цена",
         "склад": "Склад",
         "товар_id": "Товар ID"
     })
 
-    # Сортируем и ограничиваем вывод (если данных больше, чем нужно)
-    df = df.sort_values("Продано", ascending=False).head(top_n)
-    df = df[["Артикул", "Наименование", "Продано", "Пополнено", "Склад", "Товар ID"]]
+    # Ограничиваем только для таблицы отображения (TOP-N)
+    df_limited = df_full.sort_values("Продано", ascending=False).head(top_n)
+    df_limited = df_limited[["Артикул", "Наименование", "Цена", "Продано", "Пополнено", "Склад", "Товар ID"]]
 
-    # Корректный заголовок с активными фильтрами
     title_parts = [f"ТОП-{top_n} товаров"]
     if sklads:
         title_parts.append(f"по складам: {', '.join(sklads)}")
@@ -1367,11 +1380,60 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
         title_parts.append(f"по группам: {', '.join(groups)}")
     if selected_project:
         title_parts.append(f"проект: {selected_project}")
-
     title = " | ".join(title_parts)
 
-    return df.to_dict("records"), [], title
+    # Сохраняем полный df в Store для выгрузки
+    return df_limited.to_dict("records"), [], title, df_full.to_dict("records")
 
+
+@app.callback(
+    Output("download-full-alyans-xlsx", "data"),
+    Input("download-full-alyans-btn", "n_clicks"),
+    State("hidden-full-table", "data"),
+    prevent_initial_call=True
+)
+def download_full_alyans_excel(n_clicks, full_table_data):
+    if not full_table_data:
+        return None
+
+    df = pd.DataFrame(full_table_data)
+    if df.empty:
+        return None
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Полная таблица ТОП"
+
+    # Записываем данные
+    for r in dataframe_to_rows(df, index=False, header=True):
+        ws.append(r)
+
+    # --- Форматирование колонок ---
+    for col_cells in ws.columns:
+        col_letter = get_column_letter(col_cells[0].column)
+        max_length = 0
+        for cell in col_cells:
+            if cell.value is not None:
+                # Форматируем колонку "Цена"
+                if cell.row > 1 and ws.cell(row=1, column=cell.column).value == "Цена":
+                    try:
+                        cell.value = float(cell.value)
+                        cell.number_format = '#,##0.00 ₽'
+                    except:
+                        pass
+                max_length = max(max_length, len(str(cell.value)))
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions[col_letter].width = max_length + 2
+
+    ws.freeze_panes = "A2"
+    ws["A1"].font = Font(bold=True)
+
+    # --- Сохраняем в буфер ---
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+
+    return dcc.send_bytes(bio.getvalue(), "alyans_full_table.xlsx")
 
 
 @app.callback(
