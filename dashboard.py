@@ -323,14 +323,17 @@ def get_unique_groups():
 # ---------- ТОП товаров ----------
 def get_top_products(top_n=100, sklads=None, groups=None, project=None):
     """
-    Возвращает ТОП товаров по продажам с фильтрами:
-    - Склад
-    - Группа
-    - Проект (Корея / Китай)
+    Возвращает ТОП товаров по продажам с фильтрами.
     """
     try:
-        # --- Безопасная обработка top_n ---
-        top_n = int(top_n) if top_n is not None else 100
+        # --- ✅ Надёжная обработка top_n ---
+        if top_n in [None, "", "None"]:
+            top_n = 100
+        else:
+            try:
+                top_n = int(top_n)
+            except (ValueError, TypeError):
+                top_n = 100
 
         sklads = _ensure_list(sklads)
         groups = _ensure_list(groups)
@@ -1347,7 +1350,7 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
         return [], [], "Выберите склад, группу или проект", None
 
     df_full = get_top_products(
-        top_n=None,  # берем все данные
+        top_n=top_n,  # берем все данные
         sklads=sklads,
         groups=groups,
         project=selected_project
