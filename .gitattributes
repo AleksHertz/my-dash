@@ -1,0 +1,1 @@
+data/alyans_data.duckdb filter=lfs diff=lfs merge=lfs -text
