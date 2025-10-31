@@ -319,9 +319,26 @@ def get_unique_groups():
         logger.exception("[get_unique_groups] Ошибка")
         return []
 
+def get_unique_articles():
+    """Возвращает список уникальных артикулов производителя из PostgreSQL (alyans_refresh_v3)."""
+    try:
+        with engine.connect() as conn:
+            query = text("""
+                SELECT DISTINCT артикул_производителя
+                FROM alyans_refresh_v3
+                WHERE артикул_производителя IS NOT NULL
+                ORDER BY артикул_производителя
+            """)
+            result = conn.execute(query)
+            articles = [row[0] for row in result if row[0]]
+        return articles
+    except Exception as e:
+        logger.exception("[get_unique_articles] Ошибка при получении списка артикулов")
+        return []
 
+    
 # ---------- ТОП товаров ----------
-def get_top_products(top_n=100, sklads=None, groups=None, project=None):
+def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=None):
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
     params = {"top_n": int(top_n) if top_n is not None else 100}
@@ -336,6 +353,11 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
     if groups:
         where.append("группа = ANY(:groups)")
         params["groups"] = groups
+
+    # --- Фильтр по артикулу (используем артикул_производителя; на всякий случай проверяем и артикул/товар_id) ---
+    if artikul:
+        params["artikul"] = str(artikul)
+        where.append("(артикул_производителя = :artikul OR артикул = :artikul OR товар_id = :artikul)")
 
     # --- Проектные группы ---
     korea_groups = [
@@ -386,15 +408,16 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None):
         params["china_groups"] = china_groups
         where.append("группа = ANY(:china_groups)")
 
-    # --- Защита от слишком широкого запроса ---
-    if not sklads and not groups and not project:
+    # --- Защита от слишком широкого запроса (теперь учитываем фильтр по артикулу) ---
+    if not sklads and not groups and not project and not artikul:
         logger.warning("⚠️ Слишком широкий запрос без фильтров — пропущен.")
         return pd.DataFrame()
 
     # --- Формируем WHERE ---
     where_clause = " AND ".join(where)
 
-    aggregate = len(sklads) > 1
+    # если склад НЕ выбран — агрегируем по товару (то есть общий список), либо если выбран >1 склада
+    aggregate = (not sklads) or (len(sklads) > 1)
 
     try:
         with engine.connect() as conn:
@@ -1144,6 +1167,18 @@ app.layout = html.Div([
                     style={"marginBottom": "20px"}
                 ),
 
+                html.Label("Артикул производителя:"),
+                dcc.Dropdown(
+                    id="alyans-article",
+                    multi=False,
+                    clearable=True,
+                    placeholder="Введите или выберите артикул производителя",
+                    options=[
+                        {"label": a, "value": a} for a in _ensure_list(get_unique_articles())
+                    ],
+                    style={"marginBottom": "25px"}
+                ),
+
                 # -------------------- 🔹 Графики --------------------
                 html.H3("📈 Динамика остатков и продаж по выбранному товару"),
                 dcc.Loading(
@@ -1228,6 +1263,7 @@ app.layout = html.Div([
         ]),
     ])
 ])
+
 
 # --------------------
 # КОЛБЭКИ
@@ -1329,37 +1365,43 @@ def load_filters(active_tab):
     Output("alyans-table", "data"),
     Output("alyans-table", "selected_rows"),
     Output("alyans-top-title", "children"),
-    Output("hidden-full-table", "data"),  # <-- Store для полной таблицы
+    Output("hidden-full-table", "data"),
     Input("alyans-sklad", "value"),
     Input("alyans-group", "value"),
     Input("project-filter", "value"),
+    Input("alyans-article", "value"),
     Input("alyans-top-size", "value"),
 )
-def update_alyans_table(selected_sklads, selected_groups, selected_project, top_n):
+def update_alyans_table(selected_sklads, selected_groups, selected_project, selected_article, top_n):
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
     top_n = int(top_n or 100)
 
-    if not sklads and not groups and not selected_project:
-        return [], [], "Выберите склад, группу или проект", None
-
-    df_full = get_top_products(
-        top_n=top_n,  # берем все данные
-        sklads=sklads,
-        groups=groups,
-        project=selected_project
-    )
+    # 🔹 Добавляем фильтр по артикулу
+    if selected_article:
+        df_full = get_top_products(
+            top_n=top_n,
+            sklads=sklads,
+            groups=groups,
+            project=selected_project,
+            artikul=selected_article
+        )
+    else:
+        df_full = get_top_products(
+            top_n=top_n,
+            sklads=sklads,
+            groups=groups,
+            project=selected_project
+        )
 
     if df_full.empty:
         return [], [], f"ТОП-{top_n}: нет данных", None
 
-    # Добавляем отсутствующие колонки
     for col in ["артикул", "артикул_производителя", "наименование", "всего_продано",
                 "всего_пополнено", "цена", "склад", "товар_id"]:
         if col not in df_full.columns:
             df_full[col] = None
 
-    # Если есть артикул_производителя — используем его, иначе оставляем "артикул"
     df_full["Артикул"] = df_full["артикул_производителя"].fillna(df_full["артикул"])
 
     df_full = df_full.rename(columns={
@@ -1371,7 +1413,6 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
         "товар_id": "Товар ID"
     })
 
-    # Ограничиваем только для таблицы отображения (TOP-N)
     df_limited = df_full.sort_values("Продано", ascending=False).head(top_n)
     df_limited = df_limited[["Артикул", "Наименование", "Цена", "Продано", "Пополнено", "Склад", "Товар ID"]]
 
@@ -1382,10 +1423,12 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, top_
         title_parts.append(f"по группам: {', '.join(groups)}")
     if selected_project:
         title_parts.append(f"проект: {selected_project}")
+    if selected_article:
+        title_parts.append(f"артикул: {selected_article}")
     title = " | ".join(title_parts)
 
-    # Сохраняем полный df в Store для выгрузки
     return df_limited.to_dict("records"), [], title, df_full.to_dict("records")
+
 
 
 
