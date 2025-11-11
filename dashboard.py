@@ -1069,15 +1069,27 @@ app.layout = html.Div([
                     row_selectable="single",
                 ),
 
+        # ---- Кнопка для скачивания таблицы ----
                 html.Div([
                     dbc.Button(
                         "📥 Скачать таблицу Excel (с учётом фильтров)",
-                        id="download-2025-btn",
+                        id="download-2025-table-btn",
                         color="primary",
                         className="mt-3"
                     ),
-                    dcc.Download(id="download-2025-xlsx"),
-                ], style={"marginTop": "20px"})
+                    dcc.Download(id="download-2025-table-xlsx"),
+                ], style={"marginTop": "20px"}),
+
+        # ---- Кнопка для скачивания данных графика ----
+                html.Div([
+                    dbc.Button(
+                        "📥 Скачать данные для графика",
+                        id="download-2025-graph-btn",
+                        color="secondary",
+                        className="mt-3"
+                    ),
+                    dcc.Download(id="download-2025-graph-xlsx"),
+                ], style={"marginTop": "10px"})
             ])
         ]),
 
@@ -1772,15 +1784,16 @@ def download_alyans_xlsx(n_clicks, table_data, selected_rows):
     return dcc.send_bytes(bio.getvalue(), filename)
 
 # ------------------- Выгрузка полной таблицы Анализ 2025 -------------------
+# Выгрузка таблицы
 @app.callback(
-    Output("download-2025-xlsx", "data"),
-    Input("download-2025-btn", "n_clicks"),
+    Output("download-2025-table-xlsx", "data"),
+    Input("download-2025-table-btn", "n_clicks"),
     State("sklad-2025-filter", "value"),
     State("article-2025-filter", "value"),
     State("nom-2025-filter", "value"),
     prevent_initial_call=True
 )
-def download_full_2025_excel(n_clicks, selected_sklads, selected_article, selected_nom):
+def download_2025_table(n_clicks, sklad, article, nom):
     dff = df_2025_clean.copy()
 
     # --- Применяем фильтры ---
@@ -2574,14 +2587,14 @@ def download_peaks_excel(n_clicks, sklad, article, nom):
     return dcc.send_bytes(output.read(), filename="всплески_продаж.xlsx")
 
 @app.callback(
-    Output("download-2025-xlsx", "data"),
-    Input("download-2025-btn", "n_clicks"),
+    Output("download-2025-graph-xlsx", "data"),
+    Input("download-2025-graph-btn", "n_clicks"),
     State("sklad-2025-filter", "value"),
     State("article-2025-filter", "value"),
     State("month-2025-filter", "value"),
-    prevent_initial_call=True,
+    prevent_initial_call=True
 )
-def download_2025_excel(n_clicks, sklad, article, month):
+def download_2025_graph(n_clicks, sklad, article, month):
     try:
         dff = df_2025.copy()
         dff.columns = [col.strip() for col in dff.columns]
