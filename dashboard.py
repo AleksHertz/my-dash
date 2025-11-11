@@ -1800,7 +1800,6 @@ def download_2025_table(n_clicks, selected_sklads, top_size):
 
         # --- Применяем фильтр по складам (если есть) ---
         if selected_sklads:
-            # _to_list используется в проекте — сохраняем поведение
             dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
         print(f"[download_2025_table] Rows after sklad filter: {len(dff)}")
 
@@ -1812,10 +1811,14 @@ def download_2025_table(n_clicks, selected_sklads, top_size):
         top_n = int(top_size) if top_size else 100
         print(f"[download_2025_table] top_n = {top_n}")
 
-        # --- Группируем точно как в update_top_table: по Артикул_товар, Номенклатура_канон, Склад ---
+        # --- Группируем точно как в таблице + добавляем пополнено и цену ---
         top_df = (
             dff.groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)
-               .agg({"Продано": "sum"})
+               .agg({
+                   "Продано": "sum",
+                   "Пришло": "sum",
+                   "Цена": "mean"
+               })
                .sort_values("Продано", ascending=False)
                .head(top_n)
         )
@@ -1824,7 +1827,8 @@ def download_2025_table(n_clicks, selected_sklads, top_size):
         # --- Переименовываем колонки в читаемые ---
         top_df = top_df.rename(columns={
             "Артикул_товар": "Артикул",
-            "Номенклатура_канон": "Номенклатура"
+            "Номенклатура_канон": "Номенклатура",
+            "Пришло": "Пополнено"
         })
 
         # --- Добавляем подсказку по странице (page_size = 20 в ui) ---
@@ -1832,7 +1836,7 @@ def download_2025_table(n_clicks, selected_sklads, top_size):
         top_df["Страница в таблице"] = (top_df.index // 20) + 1
 
         # --- Порядок колонок для выгрузки ---
-        columns_order = ["Склад", "Артикул", "Номенклатура", "Продано", "Страница в таблице"]
+        columns_order = ["Склад", "Артикул", "Номенклатура", "Продано", "Пополнено", "Цена", "Страница в таблице"]
         columns_order = [c for c in columns_order if c in top_df.columns]
         top_df = top_df[columns_order]
         print(f"[download_2025_table] Final columns: {top_df.columns.tolist()}, rows: {len(top_df)}")
@@ -1842,7 +1846,6 @@ def download_2025_table(n_clicks, selected_sklads, top_size):
         ws = wb.active
         ws.title = "Анализ 2025 - ТОП"
 
-        # dataframe_to_rows импортируется из openpyxl.utils.dataframe
         for r in dataframe_to_rows(top_df, index=False, header=True):
             ws.append(r)
 
@@ -1852,7 +1855,8 @@ def download_2025_table(n_clicks, selected_sklads, top_size):
             max_length = 0
             for cell in col_cells:
                 if cell.value is not None:
-                    # не форматируем цену, т.к. в ТОП-таблице её нет; если добавим — отформатируем по аналогии
+                    if col_cells[0].value == "Цена" and isinstance(cell.value, (int, float)):
+                        cell.number_format = '#,##0.00 ₽'
                     max_length = max(max_length, len(str(cell.value)))
                 cell.alignment = Alignment(horizontal="center", vertical="center")
             ws.column_dimensions[col_letter].width = max_length + 2
