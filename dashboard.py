@@ -1784,90 +1784,66 @@ def download_alyans_xlsx(n_clicks, table_data, selected_rows):
     return dcc.send_bytes(bio.getvalue(), filename)
 
 # ------------------- Выгрузка таблицы Анализ 2025 -------------------
-# ------------------- Выгрузка таблицы Анализ 2025 (корректная, топ-N) -------------------
+# ------------------- Выгрузка ТОП-таблицы Анализ 2025 (корректно, игнорирует выделение) -------------------
 @app.callback(
     Output("download-2025-table-xlsx", "data"),
     Input("download-2025-table-btn", "n_clicks"),
     State("sklad-2025-filter", "value"),
-    State("article-2025-filter", "value"),
-    State("nom-2025-filter", "value"),
-    State("top-size-selector", "value"),   # учитываем топ-N
+    State("top-size-selector", "value"),
     prevent_initial_call=True
 )
-def download_2025_table(n_clicks, sklad, article, nom, top_size):
+def download_2025_table(n_clicks, selected_sklads, top_size):
     try:
         print("[download_2025_table] Callback triggered")
         dff = df_2025_clean.copy()
         print(f"[download_2025_table] Initial rows: {len(dff)}")
 
-        # --- Фильтры ---
-        if sklad:
-            dff = dff[dff["Склад"].isin(_to_list(sklad))]
-        if article:
-            dff = dff[dff["Артикул_товар"] == article]
-        if nom:
-            dff = dff[dff["Номенклатура_канон"] == nom]
+        # --- Применяем фильтр по складам (если есть) ---
+        if selected_sklads:
+            # _to_list используется в проекте — сохраняем поведение
+            dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
+        print(f"[download_2025_table] Rows after sklad filter: {len(dff)}")
 
-        print(f"[download_2025_table] Rows after filters: {len(dff)}")
         if dff.empty:
-            print("[download_2025_table] Empty dataframe after filters -> nothing to export")
+            print("[download_2025_table] Empty after filters -> nothing to export")
             return None
 
-        # --- определяем топ-N ---
+        # --- Определяем top-N (как в таблице) ---
         top_n = int(top_size) if top_size else 100
         print(f"[download_2025_table] top_n = {top_n}")
 
-        # --- обнаруживаем возможные имена колонок для "Пополнено" и "Цена" ---
-        restock_col = next((c for c in ["Пополнено", "Пришло", "Приход"] if c in dff.columns), None)
-        price_col = "Цена" if "Цена" in dff.columns else None
-        print(f"[download_2025_table] detected restock_col = {restock_col}, price_col = {price_col}")
-
-        # --- агрегат (точно как в таблице ТОП) ---
-        agg_dict = {"Продано": "sum"}
-        if restock_col:
-            agg_dict[restock_col] = "sum"
-        if price_col:
-            # берём последнее значение цены в группе (можно заменить на mean/median при желании)
-            agg_dict[price_col] = "last"
-
-        grouped = (
-            dff
-            .groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)
-            .agg(agg_dict)
-            .sort_values("Продано", ascending=False)
-            .head(top_n)
+        # --- Группируем точно как в update_top_table: по Артикул_товар, Номенклатура_канон, Склад ---
+        top_df = (
+            dff.groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)
+               .agg({"Продано": "sum"})
+               .sort_values("Продано", ascending=False)
+               .head(top_n)
         )
-        print(f"[download_2025_table] Rows after grouping (top-{top_n}): {len(grouped)}")
+        print(f"[download_2025_table] Rows after grouping (top-{top_n}): {len(top_df)}")
 
-        # --- Переименования ---
-        rename_map = {"Артикул_товар": "Артикул", "Номенклатура_канон": "Номенклатура"}
-        if restock_col:
-            rename_map[restock_col] = "Пополнено"
-        if price_col:
-            rename_map[price_col] = "Цена"
+        # --- Переименовываем колонки в читаемые ---
+        top_df = top_df.rename(columns={
+            "Артикул_товар": "Артикул",
+            "Номенклатура_канон": "Номенклатура"
+        })
 
-        grouped = grouped.rename(columns=rename_map)
-        print(f"[download_2025_table] Columns after rename: {grouped.columns.tolist()}")
+        # --- Добавляем подсказку по странице (page_size = 20 в ui) ---
+        top_df = top_df.reset_index(drop=True)
+        top_df["Страница в таблице"] = (top_df.index // 20) + 1
 
-        # --- Формируем порядок колонок ---
-        columns_order = ["Склад", "Артикул", "Номенклатура", "Продано", "Пополнено", "Цена"]
-        columns_order = [c for c in columns_order if c in grouped.columns]
-
-        # --- добавляем подсказку по странице (как в таблице: page_size=20) ---
-        grouped = grouped.reset_index(drop=True)
-        grouped["Страница в таблице"] = (grouped.index // 20) + 1
-        columns_order.append("Страница в таблице")
-
-        grouped = grouped[columns_order]
-        print(f"[download_2025_table] Final columns: {grouped.columns.tolist()}, rows: {len(grouped)}")
+        # --- Порядок колонок для выгрузки ---
+        columns_order = ["Склад", "Артикул", "Номенклатура", "Продано", "Страница в таблице"]
+        columns_order = [c for c in columns_order if c in top_df.columns]
+        top_df = top_df[columns_order]
+        print(f"[download_2025_table] Final columns: {top_df.columns.tolist()}, rows: {len(top_df)}")
 
         # --- Создаём Excel (openpyxl) ---
         wb = Workbook()
         ws = wb.active
-        ws.title = "Анализ 2025"
+        ws.title = "Анализ 2025 - ТОП"
 
         # dataframe_to_rows импортируется из openpyxl.utils.dataframe
-        for r in dataframe_to_rows(grouped, index=False, header=True):
+        for r in dataframe_to_rows(top_df, index=False, header=True):
             ws.append(r)
 
         # --- Форматирование колонок ---
@@ -1876,13 +1852,7 @@ def download_2025_table(n_clicks, sklad, article, nom, top_size):
             max_length = 0
             for cell in col_cells:
                 if cell.value is not None:
-                    # Форматируем колонку "Цена"
-                    if cell.row > 1 and ws.cell(row=1, column=cell.column).value == "Цена":
-                        try:
-                            cell.value = float(cell.value)
-                            cell.number_format = '#,##0.00 ₽'
-                        except Exception:
-                            pass
+                    # не форматируем цену, т.к. в ТОП-таблице её нет; если добавим — отформатируем по аналогии
                     max_length = max(max_length, len(str(cell.value)))
                 cell.alignment = Alignment(horizontal="center", vertical="center")
             ws.column_dimensions[col_letter].width = max_length + 2
