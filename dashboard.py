@@ -1784,102 +1784,124 @@ def download_alyans_xlsx(n_clicks, table_data, selected_rows):
     return dcc.send_bytes(bio.getvalue(), filename)
 
 # ------------------- Выгрузка таблицы Анализ 2025 -------------------
-# ------------------- Выгрузка таблицы Анализ 2025 с учетом топ-N -------------------
+# ------------------- Выгрузка таблицы Анализ 2025 (корректная, топ-N) -------------------
 @app.callback(
     Output("download-2025-table-xlsx", "data"),
     Input("download-2025-table-btn", "n_clicks"),
     State("sklad-2025-filter", "value"),
     State("article-2025-filter", "value"),
     State("nom-2025-filter", "value"),
-    State("top-size-selector", "value"),  # <- добавляем топ-N
+    State("top-size-selector", "value"),   # учитываем топ-N
     prevent_initial_call=True
 )
 def download_2025_table(n_clicks, sklad, article, nom, top_size):
-    print("[download_2025_table] Callback triggered")
-    dff = df_2025_clean.copy()
-    print(f"[download_2025_table] Initial rows: {len(dff)}")
+    try:
+        print("[download_2025_table] Callback triggered")
+        dff = df_2025_clean.copy()
+        print(f"[download_2025_table] Initial rows: {len(dff)}")
 
-    # --- Фильтры ---
-    if sklad:
-        dff = dff[dff["Склад"].isin(_to_list(sklad))]
-    if article:
-        dff = dff[dff["Артикул_товар"] == article]
-    if nom:
-        dff = dff[dff["Номенклатура_канон"] == nom]
+        # --- Фильтры ---
+        if sklad:
+            dff = dff[dff["Склад"].isin(_to_list(sklad))]
+        if article:
+            dff = dff[dff["Артикул_товар"] == article]
+        if nom:
+            dff = dff[dff["Номенклатура_канон"] == nom]
 
-    print(f"[download_2025_table] Rows after filters: {len(dff)}")
+        print(f"[download_2025_table] Rows after filters: {len(dff)}")
+        if dff.empty:
+            print("[download_2025_table] Empty dataframe after filters -> nothing to export")
+            return None
 
-    if dff.empty:
-        print("[download_2025_table] Empty dataframe after filters")
+        # --- определяем топ-N ---
+        top_n = int(top_size) if top_size else 100
+        print(f"[download_2025_table] top_n = {top_n}")
+
+        # --- обнаруживаем возможные имена колонок для "Пополнено" и "Цена" ---
+        restock_col = next((c for c in ["Пополнено", "Пришло", "Приход"] if c in dff.columns), None)
+        price_col = "Цена" if "Цена" in dff.columns else None
+        print(f"[download_2025_table] detected restock_col = {restock_col}, price_col = {price_col}")
+
+        # --- агрегат (точно как в таблице ТОП) ---
+        agg_dict = {"Продано": "sum"}
+        if restock_col:
+            agg_dict[restock_col] = "sum"
+        if price_col:
+            # берём последнее значение цены в группе (можно заменить на mean/median при желании)
+            agg_dict[price_col] = "last"
+
+        grouped = (
+            dff
+            .groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)
+            .agg(agg_dict)
+            .sort_values("Продано", ascending=False)
+            .head(top_n)
+        )
+        print(f"[download_2025_table] Rows after grouping (top-{top_n}): {len(grouped)}")
+
+        # --- Переименования ---
+        rename_map = {"Артикул_товар": "Артикул", "Номенклатура_канон": "Номенклатура"}
+        if restock_col:
+            rename_map[restock_col] = "Пополнено"
+        if price_col:
+            rename_map[price_col] = "Цена"
+
+        grouped = grouped.rename(columns=rename_map)
+        print(f"[download_2025_table] Columns after rename: {grouped.columns.tolist()}")
+
+        # --- Формируем порядок колонок ---
+        columns_order = ["Склад", "Артикул", "Номенклатура", "Продано", "Пополнено", "Цена"]
+        columns_order = [c for c in columns_order if c in grouped.columns]
+
+        # --- добавляем подсказку по странице (как в таблице: page_size=20) ---
+        grouped = grouped.reset_index(drop=True)
+        grouped["Страница в таблице"] = (grouped.index // 20) + 1
+        columns_order.append("Страница в таблице")
+
+        grouped = grouped[columns_order]
+        print(f"[download_2025_table] Final columns: {grouped.columns.tolist()}, rows: {len(grouped)}")
+
+        # --- Создаём Excel (openpyxl) ---
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Анализ 2025"
+
+        # dataframe_to_rows импортируется из openpyxl.utils.dataframe
+        for r in dataframe_to_rows(grouped, index=False, header=True):
+            ws.append(r)
+
+        # --- Форматирование колонок ---
+        for col_cells in ws.columns:
+            col_letter = get_column_letter(col_cells[0].column)
+            max_length = 0
+            for cell in col_cells:
+                if cell.value is not None:
+                    # Форматируем колонку "Цена"
+                    if cell.row > 1 and ws.cell(row=1, column=cell.column).value == "Цена":
+                        try:
+                            cell.value = float(cell.value)
+                            cell.number_format = '#,##0.00 ₽'
+                        except Exception:
+                            pass
+                    max_length = max(max_length, len(str(cell.value)))
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            ws.column_dimensions[col_letter].width = max_length + 2
+
+        ws.freeze_panes = "A2"
+        ws["A1"].font = Font(bold=True)
+
+        # --- Сохраняем в буфер и отдаем ---
+        bio = io.BytesIO()
+        wb.save(bio)
+        bio.seek(0)
+        filename = f"analysis_2025_top{top_n}.xlsx"
+        print(f"[download_2025_table] Excel ready: {filename}")
+        return dcc.send_bytes(bio.getvalue(), filename)
+
+    except Exception as e:
+        print(f"[download_2025_table] ERROR: {e}", type(e))
         return None
 
-    # --- Строим колонку Артикул ---
-    dff["Артикул"] = dff["Артикул_товар"]
-
-    # --- Переименовываем колонки ---
-    rename_map = {
-        "Номенклатура_канон": "Номенклатура",
-        "Продано": "Продано",
-        "Пополнено": "Пополнено",
-        "Цена": "Цена",
-        "Склад": "Склад"
-    }
-    rename_map = {k: v for k, v in rename_map.items() if k in dff.columns}
-    dff = dff.rename(columns=rename_map)
-    print(f"[download_2025_table] Columns after rename: {dff.columns.tolist()}")
-
-    # --- Сортировка и ограничение по топ-N ---
-    top_n = int(top_size) if top_size else 100
-    if "Продано" in dff.columns:
-        dff = dff.sort_values("Продано", ascending=False).head(top_n)
-    print(f"[download_2025_table] Final rows after top-{top_n}: {len(dff)}")
-
-    # --- Колонки в нужном порядке ---
-    columns_order = ["Склад", "Артикул", "Номенклатура", "Продано", "Пополнено", "Цена"]
-    columns_order = [col for col in columns_order if col in dff.columns]
-
-    # --- Добавляем подсказку по странице ---
-    dff = dff.reset_index(drop=True)
-    dff["Страница в таблице"] = (dff.index // 20) + 1
-    columns_order.append("Страница в таблице")
-
-    dff = dff[columns_order]
-    print(f"[download_2025_table] Final columns: {dff.columns.tolist()}, rows: {len(dff)}")
-
-    # --- Создание Excel ---
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Анализ 2025"
-
-    for r in dataframe_to_rows(dff, index=False, header=True):
-        ws.append(r)
-
-    # --- Форматирование колонок ---
-    for col_cells in ws.columns:
-        col_letter = get_column_letter(col_cells[0].column)
-        max_length = 0
-        for cell in col_cells:
-            if cell.value is not None:
-                if cell.row > 1 and ws.cell(row=1, column=cell.column).value == "Цена":
-                    try:
-                        cell.value = float(cell.value)
-                        cell.number_format = '#,##0.00 ₽'
-                    except:
-                        pass
-                max_length = max(max_length, len(str(cell.value)))
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-        ws.column_dimensions[col_letter].width = max_length + 2
-
-    ws.freeze_panes = "A2"
-    ws["A1"].font = Font(bold=True)
-
-    # --- Сохраняем в буфер ---
-    bio = io.BytesIO()
-    wb.save(bio)
-    bio.seek(0)
-
-    print("[download_2025_table] Excel ready, sending to user")
-    return dcc.send_bytes(bio.getvalue(), f"analysis_2025_top{top_n}.xlsx")
 
 
 
