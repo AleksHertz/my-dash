@@ -940,7 +940,7 @@ app.layout = html.Div([
         ]),
 
         # ===================== Вкладка 2025 =====================
-        dcc.Tab(label="Анализ 2025", value="2025", children=[
+        dcc.Tab(label="Восток 2025", value="2025", children=[
             html.Div([
                 html.H3("Загрузить новые данные"),
                 html.Div([
@@ -1031,6 +1031,7 @@ app.layout = html.Div([
                             {"label": "Топ-100", "value": 100},
                             {"label": "Топ-250", "value": 250},
                             {"label": "Топ-500", "value": 500},
+                            {"label": "Топ-1000", "value": 1000},
                         ],
                         value=100,
                         inline=True
@@ -1046,6 +1047,7 @@ app.layout = html.Div([
                         {"name": "Номенклатура", "id": "Номенклатура"},
                         {"name": "Продано", "id": "Продано"},
                         {"name": "Склад", "id": "Склад"},
+                        {"name": "Страница в таблице", "id": "Страница в таблице"},
                     ],
                     style_table={
                         "overflowX": "auto",
@@ -1069,7 +1071,7 @@ app.layout = html.Div([
 
                 html.Div([
                     dbc.Button(
-                        "📥 Выгрузить в Excel (с учётом фильтров)",
+                        "📥 Скачать таблицу Excel (с учётом фильтров)",
                         id="download-2025-btn",
                         color="primary",
                         className="mt-3"
@@ -1078,6 +1080,7 @@ app.layout = html.Div([
                 ], style={"marginTop": "20px"})
             ])
         ]),
+
 
             # ===================== Вкладка Альянс =====================
         dcc.Tab(label="Альянс", value="alyans", children=[
@@ -1768,6 +1771,89 @@ def download_alyans_xlsx(n_clicks, table_data, selected_rows):
     filename = f"Отчёт_{tovar_id}.xlsx"
     return dcc.send_bytes(bio.getvalue(), filename)
 
+# ------------------- Выгрузка полной таблицы Анализ 2025 -------------------
+@app.callback(
+    Output("download-2025-xlsx", "data"),
+    Input("download-2025-btn", "n_clicks"),
+    State("sklad-2025-filter", "value"),
+    State("article-2025-filter", "value"),
+    State("nom-2025-filter", "value"),
+    prevent_initial_call=True
+)
+def download_full_2025_excel(n_clicks, selected_sklads, selected_article, selected_nom):
+    dff = df_2025_clean.copy()
+
+    # --- Применяем фильтры ---
+    if selected_sklads:
+        dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
+    if selected_article:
+        dff = dff[dff["Артикул_товар"] == selected_article]
+    if selected_nom:
+        dff = dff[dff["Номенклатура_канон"] == selected_nom]
+
+    if dff.empty:
+        return None
+
+    # --- Строим колонку Артикул ---
+    dff["Артикул"] = dff["Артикул_товар"]
+
+    # --- Переименовываем колонки ---
+    rename_map = {
+        "Номенклатура_канон": "Номенклатура",
+        "Продано": "Продано",
+        "Пополнено": "Пополнено",
+        "Цена": "Цена",
+        "Склад": "Склад"
+    }
+    # Только существующие колонки
+    rename_map = {k: v for k, v in rename_map.items() if k in dff.columns}
+    dff = dff.rename(columns=rename_map)
+
+    # --- Колонки в нужном порядке ---
+    columns_order = ["Склад", "Артикул", "Номенклатура", "Продано", "Пополнено", "Цена"]
+    columns_order = [col for col in columns_order if col in dff.columns]
+
+    # --- Добавляем подсказку по странице ---
+    dff = dff.reset_index(drop=True)
+    dff["Страница в таблице"] = (dff.index // 20) + 1
+    columns_order.append("Страница в таблице")
+
+    dff = dff[columns_order]
+
+    # --- Создание Excel ---
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Анализ 2025"
+
+    for r in dataframe_to_rows(dff, index=False, header=True):
+        ws.append(r)
+
+    # --- Форматирование колонок ---
+    for col_cells in ws.columns:
+        col_letter = get_column_letter(col_cells[0].column)
+        max_length = 0
+        for cell in col_cells:
+            if cell.value is not None:
+                # Форматируем колонку "Цена"
+                if cell.row > 1 and ws.cell(row=1, column=cell.column).value == "Цена":
+                    try:
+                        cell.value = float(cell.value)
+                        cell.number_format = '#,##0.00 ₽'
+                    except:
+                        pass
+                max_length = max(max_length, len(str(cell.value)))
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions[col_letter].width = max_length + 2
+
+    ws.freeze_panes = "A2"
+    ws["A1"].font = Font(bold=True)
+
+    # --- Сохраняем в буфер ---
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+
+    return dcc.send_bytes(bio.getvalue(), "analysis_2025_full_table.xlsx")
 
 # --- Утилиты ---
 def _to_list(x):
