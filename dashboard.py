@@ -1797,12 +1797,12 @@ def download_2025_table(n_clicks, sklad, article, nom):
     dff = df_2025_clean.copy()
 
     # --- Применяем фильтры ---
-    if selected_sklads:
-        dff = dff[dff["Склад"].isin(_to_list(selected_sklads))]
-    if selected_article:
-        dff = dff[dff["Артикул_товар"] == selected_article]
-    if selected_nom:
-        dff = dff[dff["Номенклатура_канон"] == selected_nom]
+    if sklad:
+        dff = dff[dff["Склад"].isin(_to_list(sklad))]
+    if article:
+        dff = dff[dff["Артикул_товар"] == article]
+    if nom:
+        dff = dff[dff["Номенклатура_канон"] == nom]
 
     if dff.empty:
         return None
@@ -1818,7 +1818,6 @@ def download_2025_table(n_clicks, sklad, article, nom):
         "Цена": "Цена",
         "Склад": "Склад"
     }
-    # Только существующие колонки
     rename_map = {k: v for k, v in rename_map.items() if k in dff.columns}
     dff = dff.rename(columns=rename_map)
 
@@ -1847,7 +1846,6 @@ def download_2025_table(n_clicks, sklad, article, nom):
         max_length = 0
         for cell in col_cells:
             if cell.value is not None:
-                # Форматируем колонку "Цена"
                 if cell.row > 1 and ws.cell(row=1, column=cell.column).value == "Цена":
                     try:
                         cell.value = float(cell.value)
@@ -1867,6 +1865,7 @@ def download_2025_table(n_clicks, sklad, article, nom):
     bio.seek(0)
 
     return dcc.send_bytes(bio.getvalue(), "analysis_2025_full_table.xlsx")
+
 
 # --- Утилиты ---
 def _to_list(x):
