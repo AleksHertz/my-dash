@@ -1711,17 +1711,20 @@ def update_alyans_graph(table_data, selected_rows):
 )
 def download_alyans_xlsx(n_clicks, table_data, selected_rows):
     if not table_data or not selected_rows:
+        print("[download_alyans_xlsx] ⚠️ Нет выбранных строк или данных таблицы")
         return None
 
     sel = table_data[selected_rows[0]]
     tovar_id = sel.get("Товар ID") or sel.get("Артикул")
     skl = sel.get("Склад")
+    print(f"[download_alyans_xlsx] ▶️ Выбран товар: {tovar_id}, склад: {skl}")
 
     df = get_product_timeseries(
         tovar_id=tovar_id,
         sklads=[skl] if skl and skl != "Суммарно" else None
     )
     if df.empty:
+        print("[download_alyans_xlsx] ⚠️ Пустой DataFrame, выгрузка пропущена")
         return None
 
     df = df.sort_values("дата")
@@ -1729,33 +1732,45 @@ def download_alyans_xlsx(n_clicks, table_data, selected_rows):
     for col in ["остаток", "продано", "пополнение", "цена"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    # --- Создаём Excel в памяти ---
+    # --- Создаём Excel ---
     wb = Workbook()
     ws_summary = wb.active
     ws_summary.title = "Свод"
 
-    # --- Общая агрегированная таблица ---
-    agg = df.groupby("дата", as_index=False).agg({
-        "продано": "sum",
-        "пополнение": "sum",
-        "остаток": "sum",
-        "цена": "mean"
-    })
-    agg.rename(columns={"цена": "Средняя цена, ₽"}, inplace=True)
+    # --- Агрегированная таблица (по датам) ---
+    agg = (
+        df.groupby("дата", as_index=False)
+          .agg({
+              "продано": "sum",
+              "пополнение": "sum",
+              "остаток": "sum",
+              "цена": "mean"
+          })
+          .rename(columns={"цена": "Средняя цена, ₽"})
+    )
 
-    # Запись данных в сводную вкладку
+    # Добавляем "Страница в таблице" (по агрегированным строкам)
+    agg = agg.reset_index(drop=True)
+    agg["Страница в таблице"] = (agg.index // 20) + 1
+    print(f"[download_alyans_xlsx] 🧮 Свод: {len(agg)} строк, {agg['Страница в таблице'].max()} страниц")
+
+    # --- Записываем свод ---
     for r in dataframe_to_rows(agg, index=False, header=True):
         ws_summary.append(r)
 
-    # --- Добавляем вкладки по складам ---
+    # --- Вкладки по складам ---
     for skl_name, sub in df.groupby("склад"):
-        ws = wb.create_sheet(title=str(skl_name)[:31])  # Excel ограничивает длину названия
-        sub_out = sub[["дата", "продано", "пополнение", "остаток", "цена"]].copy()
+        ws = wb.create_sheet(title=str(skl_name)[:31])
+        sub = sub.sort_values("дата").reset_index(drop=True)
+        sub["Страница в таблице"] = (sub.index // 20) + 1
+        print(f"[download_alyans_xlsx] 📦 {skl_name}: {len(sub)} строк, {sub['Страница в таблице'].max()} страниц")
+
+        sub_out = sub[["дата", "продано", "пополнение", "остаток", "цена", "Страница в таблице"]].copy()
         sub_out.rename(columns={"цена": "Цена, ₽"}, inplace=True)
         for r in dataframe_to_rows(sub_out, index=False, header=True):
             ws.append(r)
 
-        # форматирование колонок
+        # форматирование
         for col in ws.columns:
             max_length = max(len(str(cell.value)) if cell.value is not None else 0 for cell in col)
             ws.column_dimensions[get_column_letter(col[0].column)].width = max_length + 2
@@ -1763,25 +1778,24 @@ def download_alyans_xlsx(n_clicks, table_data, selected_rows):
                 cell.alignment = Alignment(horizontal="center", vertical="center")
         ws.freeze_panes = "A2"
 
-    # --- Форматируем свод ---
+    # --- Форматирование "Свод" ---
     for col in ws_summary.columns:
         max_length = max(len(str(cell.value)) if cell.value is not None else 0 for cell in col)
         ws_summary.column_dimensions[get_column_letter(col[0].column)].width = max_length + 2
         for cell in col:
             cell.alignment = Alignment(horizontal="center", vertical="center")
     ws_summary.freeze_panes = "A2"
-
-    # --- Метаданные и стиль ---
     ws_summary["A1"].font = Font(bold=True)
-    ws_summary["A1"].alignment = Alignment(horizontal="center")
 
-    # --- Сохраняем в буфер ---
+    # --- Сохраняем ---
     bio = io.BytesIO()
     wb.save(bio)
     bio.seek(0)
-
     filename = f"Отчёт_{tovar_id}.xlsx"
+    print(f"[download_alyans_xlsx] ✅ Готово: {filename}")
+
     return dcc.send_bytes(bio.getvalue(), filename)
+
 
 # ------------------- Выгрузка таблицы Анализ 2025 -------------------
 # ------------------- Выгрузка ТОП-таблицы Анализ 2025 (корректно, игнорирует выделение) -------------------
