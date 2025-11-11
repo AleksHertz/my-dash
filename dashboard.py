@@ -1783,8 +1783,7 @@ def download_alyans_xlsx(n_clicks, table_data, selected_rows):
     filename = f"Отчёт_{tovar_id}.xlsx"
     return dcc.send_bytes(bio.getvalue(), filename)
 
-# ------------------- Выгрузка полной таблицы Анализ 2025 -------------------
-# Выгрузка таблицы
+# ------------------- Выгрузка таблицы Анализ 2025 -------------------
 @app.callback(
     Output("download-2025-table-xlsx", "data"),
     Input("download-2025-table-btn", "n_clicks"),
@@ -1794,17 +1793,26 @@ def download_alyans_xlsx(n_clicks, table_data, selected_rows):
     prevent_initial_call=True
 )
 def download_2025_table(n_clicks, sklad, article, nom):
+    
+    print("[download_2025_table] Callback triggered")
+    print(f"[download_2025_table] Filters -> sklad: {sklad}, article: {article}, nom: {nom}")
+
     dff = df_2025_clean.copy()
+    print(f"[download_2025_table] Initial rows: {len(dff)}")
 
     # --- Применяем фильтры ---
     if sklad:
         dff = dff[dff["Склад"].isin(_to_list(sklad))]
+        print(f"[download_2025_table] Rows after sklad filter: {len(dff)}")
     if article:
         dff = dff[dff["Артикул_товар"] == article]
+        print(f"[download_2025_table] Rows after article filter: {len(dff)}")
     if nom:
         dff = dff[dff["Номенклатура_канон"] == nom]
+        print(f"[download_2025_table] Rows after nom filter: {len(dff)}")
 
     if dff.empty:
+        print("[download_2025_table] DataFrame is empty after filtering")
         return None
 
     # --- Строим колонку Артикул ---
@@ -1820,6 +1828,7 @@ def download_2025_table(n_clicks, sklad, article, nom):
     }
     rename_map = {k: v for k, v in rename_map.items() if k in dff.columns}
     dff = dff.rename(columns=rename_map)
+    print(f"[download_2025_table] Columns after rename: {dff.columns.tolist()}")
 
     # --- Колонки в нужном порядке ---
     columns_order = ["Склад", "Артикул", "Номенклатура", "Продано", "Пополнено", "Цена"]
@@ -1831,6 +1840,14 @@ def download_2025_table(n_clicks, sklad, article, nom):
     columns_order.append("Страница в таблице")
 
     dff = dff[columns_order]
+    print(f"[download_2025_table] Final columns: {dff.columns.tolist()}, rows: {len(dff)}")
+
+    # --- Преобразуем колонки для безопасной записи в Excel ---
+    for col in dff.columns:
+        if col != "Цена":
+            dff[col] = dff[col].astype(str)
+    if "Цена" in dff.columns:
+        dff["Цена"] = pd.to_numeric(dff["Цена"], errors="coerce").fillna(0)
 
     # --- Создание Excel ---
     wb = Workbook()
@@ -1850,8 +1867,8 @@ def download_2025_table(n_clicks, sklad, article, nom):
                     try:
                         cell.value = float(cell.value)
                         cell.number_format = '#,##0.00 ₽'
-                    except:
-                        pass
+                    except Exception as e:
+                        print(f"[download_2025_table] ERROR formatting Цена: {cell.value} -> {e}")
                 max_length = max(max_length, len(str(cell.value)))
             cell.alignment = Alignment(horizontal="center", vertical="center")
         ws.column_dimensions[col_letter].width = max_length + 2
@@ -1864,7 +1881,9 @@ def download_2025_table(n_clicks, sklad, article, nom):
     wb.save(bio)
     bio.seek(0)
 
-    return dcc.send_bytes(bio.getvalue(), "analysis_2025_full_table.xlsx")
+    print("[download_2025_table] Excel created successfully")
+    return dcc.send_bytes(bio.getvalue(), "analysis_2025_table.xlsx")
+
 
 
 # --- Утилиты ---
