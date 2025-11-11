@@ -1467,7 +1467,7 @@ def download_full_alyans_excel(n_clicks, full_table_data):
     else:
         df["Артикул"] = df.get("артикул", "")
 
-    # Переименуем остальные колонки для выгрузки
+    # --- Переименуем остальные колонки для выгрузки ---
     rename_map = {
         "наименование": "Наименование",
         "всего_продано": "Продано",
@@ -1478,15 +1478,20 @@ def download_full_alyans_excel(n_clicks, full_table_data):
     }
     df = df.rename(columns=rename_map)
 
-    # Ограничим колонки в правильном порядке
-    columns_order = ["Склад", "Товар ID", "Артикул", "Наименование", "Продано", "Пополнено", "Цена"]
+    # --- Добавляем колонку "Страница в таблице" ---
+    df = df.reset_index(drop=True)
+    df["Страница в таблице"] = (df.index // 20) + 1
+
+    # --- Ограничим колонки в правильном порядке ---
+    columns_order = ["Склад", "Товар ID", "Артикул", "Наименование", "Продано", "Пополнено", "Цена", "Страница в таблице"]
     df = df[[col for col in columns_order if col in df.columns]]
 
+    # --- Создаём Excel ---
     wb = Workbook()
     ws = wb.active
     ws.title = "Полная таблица ТОП"
 
-    # Записываем данные
+    # --- Записываем данные ---
     for r in dataframe_to_rows(df, index=False, header=True):
         ws.append(r)
 
@@ -1516,6 +1521,7 @@ def download_full_alyans_excel(n_clicks, full_table_data):
     bio.seek(0)
 
     return dcc.send_bytes(bio.getvalue(), "alyans_full_table.xlsx")
+
 
 
 
