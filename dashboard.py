@@ -1784,35 +1784,33 @@ def download_alyans_xlsx(n_clicks, table_data, selected_rows):
     return dcc.send_bytes(bio.getvalue(), filename)
 
 # ------------------- Выгрузка таблицы Анализ 2025 -------------------
+# ------------------- Выгрузка таблицы Анализ 2025 с учетом топ-N -------------------
 @app.callback(
     Output("download-2025-table-xlsx", "data"),
     Input("download-2025-table-btn", "n_clicks"),
     State("sklad-2025-filter", "value"),
     State("article-2025-filter", "value"),
     State("nom-2025-filter", "value"),
+    State("top-size-selector", "value"),  # <- добавляем топ-N
     prevent_initial_call=True
 )
-def download_2025_table(n_clicks, sklad, article, nom):
-    
+def download_2025_table(n_clicks, sklad, article, nom, top_size):
     print("[download_2025_table] Callback triggered")
-    print(f"[download_2025_table] Filters -> sklad: {sklad}, article: {article}, nom: {nom}")
-
     dff = df_2025_clean.copy()
     print(f"[download_2025_table] Initial rows: {len(dff)}")
 
-    # --- Применяем фильтры ---
+    # --- Фильтры ---
     if sklad:
         dff = dff[dff["Склад"].isin(_to_list(sklad))]
-        print(f"[download_2025_table] Rows after sklad filter: {len(dff)}")
     if article:
         dff = dff[dff["Артикул_товар"] == article]
-        print(f"[download_2025_table] Rows after article filter: {len(dff)}")
     if nom:
         dff = dff[dff["Номенклатура_канон"] == nom]
-        print(f"[download_2025_table] Rows after nom filter: {len(dff)}")
+
+    print(f"[download_2025_table] Rows after filters: {len(dff)}")
 
     if dff.empty:
-        print("[download_2025_table] DataFrame is empty after filtering")
+        print("[download_2025_table] Empty dataframe after filters")
         return None
 
     # --- Строим колонку Артикул ---
@@ -1830,6 +1828,12 @@ def download_2025_table(n_clicks, sklad, article, nom):
     dff = dff.rename(columns=rename_map)
     print(f"[download_2025_table] Columns after rename: {dff.columns.tolist()}")
 
+    # --- Сортировка и ограничение по топ-N ---
+    top_n = int(top_size) if top_size else 100
+    if "Продано" in dff.columns:
+        dff = dff.sort_values("Продано", ascending=False).head(top_n)
+    print(f"[download_2025_table] Final rows after top-{top_n}: {len(dff)}")
+
     # --- Колонки в нужном порядке ---
     columns_order = ["Склад", "Артикул", "Номенклатура", "Продано", "Пополнено", "Цена"]
     columns_order = [col for col in columns_order if col in dff.columns]
@@ -1841,13 +1845,6 @@ def download_2025_table(n_clicks, sklad, article, nom):
 
     dff = dff[columns_order]
     print(f"[download_2025_table] Final columns: {dff.columns.tolist()}, rows: {len(dff)}")
-
-    # --- Преобразуем колонки для безопасной записи в Excel ---
-    for col in dff.columns:
-        if col != "Цена":
-            dff[col] = dff[col].astype(str)
-    if "Цена" in dff.columns:
-        dff["Цена"] = pd.to_numeric(dff["Цена"], errors="coerce").fillna(0)
 
     # --- Создание Excel ---
     wb = Workbook()
@@ -1867,8 +1864,8 @@ def download_2025_table(n_clicks, sklad, article, nom):
                     try:
                         cell.value = float(cell.value)
                         cell.number_format = '#,##0.00 ₽'
-                    except Exception as e:
-                        print(f"[download_2025_table] ERROR formatting Цена: {cell.value} -> {e}")
+                    except:
+                        pass
                 max_length = max(max_length, len(str(cell.value)))
             cell.alignment = Alignment(horizontal="center", vertical="center")
         ws.column_dimensions[col_letter].width = max_length + 2
@@ -1881,8 +1878,9 @@ def download_2025_table(n_clicks, sklad, article, nom):
     wb.save(bio)
     bio.seek(0)
 
-    print("[download_2025_table] Excel created successfully")
-    return dcc.send_bytes(bio.getvalue(), "analysis_2025_table.xlsx")
+    print("[download_2025_table] Excel ready, sending to user")
+    return dcc.send_bytes(bio.getvalue(), f"analysis_2025_top{top_n}.xlsx")
+
 
 
 
