@@ -1392,9 +1392,9 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, sele
     groups = _ensure_list(selected_groups)
     top_n = int(top_n or 100)
 
-    # 🔹 Добавляем фильтр по артикулу
+    # --- 1. Загружаем топ-товары как раньше ---
     if selected_article:
-        df_full = get_top_products(
+        df_top = get_top_products(
             top_n=top_n,
             sklads=sklads,
             groups=groups,
@@ -1402,23 +1402,41 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, sele
             artikul=selected_article
         )
     else:
-        df_full = get_top_products(
+        df_top = get_top_products(
             top_n=top_n,
             sklads=sklads,
             groups=groups,
             project=selected_project
         )
 
-    if df_full.empty:
+    if df_top.empty:
         return [], [], f"ТОП-{top_n}: нет данных", None
 
-    for col in ["артикул", "артикул_производителя", "наименование", "всего_продано",
-                "всего_пополнено", "цена", "склад", "товар_id"]:
-        if col not in df_full.columns:
-            df_full[col] = None
+    # --- 2. Делаем продажи как на графике (агрегируем ТАК ЖЕ!) ---
+    result_rows = []
 
+    for _, row in df_top.iterrows():
+        tid = row.get("товар_id") or row.get("артикул")
+        if pd.isna(tid):
+            continue
+
+        ts = get_product_timeseries(tovar_id=tid, sklads=sklads if sklads else None)
+        if ts.empty:
+            continue
+
+        ts["продано"] = pd.to_numeric(ts["продано"], errors="coerce").fillna(0)
+
+        # 👉 ТОЧНО КАК НА ГРАФИКЕ: сумма по всем складам
+        sold_total = int(ts["продано"].sum())
+
+        new_row = row.copy()
+        new_row["всего_продано"] = sold_total
+        result_rows.append(new_row)
+
+    df_full = pd.DataFrame(result_rows)
+
+    # --- 3. Приводим к прежнему виду ---
     df_full["Артикул"] = df_full["артикул_производителя"].fillna(df_full["артикул"])
-
     df_full = df_full.rename(columns={
         "наименование": "Наименование",
         "всего_продано": "Продано",
@@ -1431,6 +1449,7 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, sele
     df_limited = df_full.sort_values("Продано", ascending=False).head(top_n)
     df_limited = df_limited[["Артикул", "Наименование", "Цена", "Продано", "Пополнено", "Склад", "Товар ID"]]
 
+    # Заголовок
     title_parts = [f"ТОП-{top_n} товаров"]
     if sklads:
         title_parts.append(f"по складам: {', '.join(sklads)}")
