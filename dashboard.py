@@ -1388,55 +1388,49 @@ def load_filters(active_tab):
     Input("alyans-top-size", "value"),
 )
 def update_alyans_table(selected_sklads, selected_groups, selected_project, selected_article, top_n):
+
     sklads = _ensure_list(selected_sklads)
     groups = _ensure_list(selected_groups)
     top_n = int(top_n or 100)
 
-    # --- 1. Загружаем топ-товары как раньше ---
+    # ----------------------------------------------------------
+    # 🔥 Главный фикс — при выборе артикула возвращаем ВСЕ записи товара
+    # ----------------------------------------------------------
     if selected_article:
-        df_top = get_top_products(
-            top_n=top_n,
+        df_full = get_top_products(
+            top_n=None,                   # ← снимаем ограничение топа
             sklads=sklads,
             groups=groups,
             project=selected_project,
             artikul=selected_article
         )
     else:
-        df_top = get_top_products(
-            top_n=top_n,
+        df_full = get_top_products(
+            top_n=top_n,                  # обычный режим TOP-N
             sklads=sklads,
             groups=groups,
             project=selected_project
         )
 
-    if df_top.empty:
+    if df_full.empty:
         return [], [], f"ТОП-{top_n}: нет данных", None
 
-    # --- 2. Делаем продажи как на графике (агрегируем ТАК ЖЕ!) ---
-    result_rows = []
+    # ----------------------------------------------------------
+    # Подготовка колонок
+    # ----------------------------------------------------------
+    required_cols = [
+        "артикул", "артикул_производителя", "наименование",
+        "всего_продано", "всего_пополнено", "цена",
+        "склад", "товар_id"
+    ]
+    for col in required_cols:
+        if col not in df_full.columns:
+            df_full[col] = None
 
-    for _, row in df_top.iterrows():
-        tid = row.get("товар_id") or row.get("артикул")
-        if pd.isna(tid):
-            continue
-
-        ts = get_product_timeseries(tovar_id=tid, sklads=sklads if sklads else None)
-        if ts.empty:
-            continue
-
-        ts["продано"] = pd.to_numeric(ts["продано"], errors="coerce").fillna(0)
-
-        # 👉 ТОЧНО КАК НА ГРАФИКЕ: сумма по всем складам
-        sold_total = int(ts["продано"].sum())
-
-        new_row = row.copy()
-        new_row["всего_продано"] = sold_total
-        result_rows.append(new_row)
-
-    df_full = pd.DataFrame(result_rows)
-
-    # --- 3. Приводим к прежнему виду ---
+    # Артикул
     df_full["Артикул"] = df_full["артикул_производителя"].fillna(df_full["артикул"])
+
+    # Переименование колонок
     df_full = df_full.rename(columns={
         "наименование": "Наименование",
         "всего_продано": "Продано",
@@ -1446,22 +1440,49 @@ def update_alyans_table(selected_sklads, selected_groups, selected_project, sele
         "товар_id": "Товар ID"
     })
 
+    # ----------------------------------------------------------
+    # Лимитируем таблицу только для вывода (НЕ ДЛЯ ВЫГРУЗКИ)
+    # ----------------------------------------------------------
     df_limited = df_full.sort_values("Продано", ascending=False).head(top_n)
-    df_limited = df_limited[["Артикул", "Наименование", "Цена", "Продано", "Пополнено", "Склад", "Товар ID"]]
 
-    # Заголовок
+    # Выводимые столбцы
+    df_limited = df_limited[
+        ["Артикул", "Наименование", "Цена", "Продано", "Пополнено", "Склад", "Товар ID"]
+    ]
+
+    # ----------------------------------------------------------
+    # Формируем заголовок таблицы
+    # ----------------------------------------------------------
     title_parts = [f"ТОП-{top_n} товаров"]
+
     if sklads:
         title_parts.append(f"по складам: {', '.join(sklads)}")
+
     if groups:
         title_parts.append(f"по группам: {', '.join(groups)}")
+
     if selected_project:
         title_parts.append(f"проект: {selected_project}")
+
     if selected_article:
         title_parts.append(f"артикул: {selected_article}")
+
     title = " | ".join(title_parts)
 
-    return df_limited.to_dict("records"), [], title, df_full.to_dict("records")
+    # ----------------------------------------------------------
+    # 📌 Возвращаем:
+    # 1) df_limited — в таблицу
+    # 2) [] — сброс выбранной строки
+    # 3) title — заголовок
+    # 4) df_full — ВЕСЬ набор данных (для выгрузки и графиков)
+    # ----------------------------------------------------------
+    return (
+        df_limited.to_dict("records"),
+        [],
+        title,
+        df_full.to_dict("records")
+    )
+
 
 
 
