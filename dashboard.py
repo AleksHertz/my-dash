@@ -39,7 +39,7 @@ import re
 from difflib import get_close_matches
 from datetime import date
 from typing import Optional
-# --------------------
+# -------------------
 # НАСТРОЙКИ
 # --------------------
 HEIGHT_PER_BAR = 30  # высота одной строки в px
