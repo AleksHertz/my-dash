@@ -339,9 +339,16 @@ def get_unique_articles():
     
 # ---------- ТОП товаров ----------
 def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=None):
+    """
+    Возвращает TOP товаров.
+    Если top_n is None — НЕ накладываем LIMIT (используется, когда нужен полный набор по артикулу).
+    Сохраняет фильтры по складам, группам и проектам.
+    """
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
-    params = {"top_n": int(top_n) if top_n is not None else 100}
+
+    # --- Параметры и where ---
+    params = {}
     where = ["1=1"]
 
     # --- Фильтр по складам ---
@@ -354,12 +361,12 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
         where.append("группа = ANY(:groups)")
         params["groups"] = groups
 
-    # --- Фильтр по артикулу (используем артикул_производителя; на всякий случай проверяем и артикул/товар_id) ---
+    # --- Фильтр по артикулу (проверяем артикул_производителя/артикул/товар_id) ---
     if artikul:
         params["artikul"] = str(artikul)
         where.append("(артикул_производителя = :artikul OR артикул = :artikul OR товар_id = :artikul)")
 
-    # --- Проектные группы ---
+    # --- Проектные группы (как было) ---
     korea_groups = [
         "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
         "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
@@ -396,7 +403,6 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
         "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\WEICHAI",
     ]
 
-    # --- Фильтр по проекту ---
     if project == "Корея":
         params["start_date"] = datetime.utcnow().date() - timedelta(days=365)
         where.append("дата >= :start_date")
@@ -408,19 +414,28 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
         params["china_groups"] = china_groups
         where.append("группа = ANY(:china_groups)")
 
-    # --- Защита от слишком широкого запроса (теперь учитываем фильтр по артикулу) ---
+    # --- Защита от слишком широкого запроса ---
     if not sklads and not groups and not project and not artikul:
         logger.warning("⚠️ Слишком широкий запрос без фильтров — пропущен.")
         return pd.DataFrame()
 
-    # --- Формируем WHERE ---
     where_clause = " AND ".join(where)
 
-    # если склад НЕ выбран — агрегируем по товару (то есть общий список), либо если выбран >1 склада
+    # когда агрегируем по товару (нет/много складов) — aggregate True
     aggregate = (not sklads) or (len(sklads) > 1)
 
     try:
         with engine.connect() as conn:
+            # формируем LIMIT только если top_n задан (не None)
+            limit_clause = ""
+            if top_n is not None:
+                try:
+                    params["top_n"] = int(top_n)
+                    limit_clause = "LIMIT :top_n"
+                except Exception:
+                    # если top_n не приводится — игнорируем лимит (безопасно)
+                    logger.debug("[get_top_products] top_n не число — лимит не применён")
+
             if aggregate:
                 sql = f"""
                     SELECT товар_id,
@@ -434,7 +449,7 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                     GROUP BY товар_id, артикул, артикул_производителя, наименование
                     HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
-                    LIMIT :top_n
+                    {limit_clause}
                 """
             else:
                 sql = f"""
@@ -450,8 +465,10 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                     GROUP BY склад, товар_id, артикул, артикул_производителя, наименование
                     HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
-                    LIMIT :top_n
+                    {limit_clause}
                 """
+
+            logger.debug(f"[get_top_products] SQL len params={len(params)} aggregate={aggregate} top_n={top_n}")
             res = conn.execute(text(sql), params)
             df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
@@ -459,13 +476,15 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
             return df
 
         for col in ["всего_продано", "всего_пополнено"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
         return df
 
     except Exception:
         logger.exception("[get_top_products] Ошибка получения ТОП товаров")
         return pd.DataFrame()
+
 
 
 
