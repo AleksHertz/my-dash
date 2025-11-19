@@ -360,7 +360,7 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
         params["artikul"] = str(artikul)
         where.append("(артикул_производителя = :artikul OR артикул = :artikul OR товар_id = :artikul)")
 
-    # --- Проектные группы ---
+    # --- Полные проектные группы ---
     korea_groups = [
         "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
         "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
@@ -398,51 +398,49 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
     ]
 
     if project == "Корея":
-        where.append("дата >= (NOW()::date - INTERVAL '365 days')")
-        params["korea_groups"] = korea_groups
         where.append("группа = ANY(:korea_groups)")
-
+        params["korea_groups"] = korea_groups
     elif project == "Китай":
-        where.append("дата >= (NOW()::date - INTERVAL '365 days')")
-        params["china_groups"] = china_groups
         where.append("группа = ANY(:china_groups)")
+        params["china_groups"] = china_groups
 
     # --- Защита от слишком широкого запроса ---
     if not sklads and not groups and not project and not artikul:
-        logger.warning("⚠️ Слишком широкий запрос без фильтров — пропущен.")
+        print("⚠️ Слишком широкий запрос без фильтров — возвращаем пустой DataFrame")
         return pd.DataFrame()
 
     where_clause = " AND ".join(where)
-
     aggregate = (not sklads) or (len(sklads) > 1)
 
     try:
         with engine.connect() as conn:
-
             limit_clause = ""
             if top_n is not None:
-                params["top_n"] = int(top_n)
-                limit_clause = "LIMIT :top_n"
+                try:
+                    params["top_n"] = int(top_n)
+                    limit_clause = "LIMIT :top_n"
+                except Exception:
+                    print("[get_top_products] top_n не число — лимит не применён")
 
-            # --- КОРРЕКТНЫЙ DISTINCT ON ---
-            dedup_subquery = f"""
-                SELECT DISTINCT ON (товар_id, склад, дата)
-                       дата,
-                       склад,
-                       товар_id,
-                       артикул,
-                       артикул_производителя,
-                       наименование,
-                       продано,
-                       пополнение
+            # --- Суммируем по дню, как график ---
+            raw_daily = f"""
+                SELECT
+                    дата,
+                    склад,
+                    товар_id,
+                    артикул,
+                    артикул_производителя,
+                    наименование,
+                    SUM(продано) AS продано,
+                    SUM(пополнение) AS пополнение
                 FROM alyans_refresh_v3
                 WHERE {where_clause}
-                ORDER BY товар_id, склад, дата DESC
+                GROUP BY дата, склад, товар_id, артикул, артикул_производителя, наименование
             """
 
             if aggregate:
                 sql = f"""
-                    WITH daily AS ({dedup_subquery})
+                    WITH daily AS ({raw_daily})
                     SELECT
                         товар_id,
                         MAX(артикул) AS артикул,
@@ -456,10 +454,9 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                     ORDER BY всего_продано DESC
                     {limit_clause};
                 """
-
             else:
                 sql = f"""
-                    WITH daily AS ({dedup_subquery})
+                    WITH daily AS ({raw_daily})
                     SELECT
                         склад,
                         товар_id,
@@ -475,6 +472,7 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                     {limit_clause};
                 """
 
+            print(f"[get_top_products] SQL выполняется, aggregate={aggregate}, params={list(params.keys())}")
             res = conn.execute(text(sql), params)
             df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
@@ -484,9 +482,10 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
 
         return df
 
-    except Exception:
-        logger.exception("[get_top_products] Ошибка получения ТОП товаров")
+    except Exception as e:
+        print(f"[get_top_products] Ошибка получения ТОП товаров: {e}")
         return pd.DataFrame()
+
 
 
 
