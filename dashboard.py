@@ -339,44 +339,28 @@ def get_unique_articles():
     
 # ---------- ТОП товаров ----------
 def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=None):
-    """
-    Возвращает TOP товаров.
-    Исправление 2025-02-xx:
-    В подзапросе берём действительно ПОСЛЕДНЮЮ строку за день для (товар_id, склад, дата)
-    с использованием ORDER BY ... дата ASC, timestamp DESC.
-    Это полностью синхронизирует данные таблицы с данными графика.
-    """
-
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
 
     params = {}
     where = ["1=1"]
 
-    # -------------------
-    # Фильтр по складам
-    # -------------------
+    # --- Фильтр по складам ---
     if sklads:
         where.append("склад = ANY(:sklads)")
         params["sklads"] = sklads
 
-    # -------------------
-    # Фильтр по группам
-    # -------------------
+    # --- Фильтр по группам ---
     if groups:
         where.append("группа = ANY(:groups)")
         params["groups"] = groups
 
-    # -------------------
-    # Фильтр по артикулу
-    # -------------------
+    # --- Фильтр по артикулу ---
     if artikul:
         params["artikul"] = str(artikul)
         where.append("(артикул_производителя = :artikul OR артикул = :artikul OR товар_id = :artikul)")
 
-    # -------------------
-    # Проектные группы
-    # -------------------
+    # --- Проектные группы ---
     korea_groups = [
         "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
         "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
@@ -414,47 +398,33 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
     ]
 
     if project == "Корея":
-        params["start_date"] = datetime.utcnow().date() - timedelta(days=365)
-        where.append("дата >= :start_date")
+        where.append("дата >= (NOW()::date - INTERVAL '365 days')")
         params["korea_groups"] = korea_groups
         where.append("группа = ANY(:korea_groups)")
 
     elif project == "Китай":
-        params["start_date"] = datetime.utcnow().date() - timedelta(days=365)
-        where.append("дата >= :start_date")
+        where.append("дата >= (NOW()::date - INTERVAL '365 days')")
         params["china_groups"] = china_groups
         where.append("группа = ANY(:china_groups)")
 
-    # -------------------
-    # Защита от широкого запроса
-    # -------------------
+    # --- Защита от слишком широкого запроса ---
     if not sklads and not groups and not project and not artikul:
         logger.warning("⚠️ Слишком широкий запрос без фильтров — пропущен.")
         return pd.DataFrame()
 
     where_clause = " AND ".join(where)
 
-    # aggregate: True если много складов или их нет
     aggregate = (not sklads) or (len(sklads) > 1)
 
     try:
         with engine.connect() as conn:
 
-            # -------------------
-            # LIMIT
-            # -------------------
             limit_clause = ""
             if top_n is not None:
-                try:
-                    params["top_n"] = int(top_n)
-                    limit_clause = "LIMIT :top_n"
-                except Exception:
-                    logger.debug("[get_top_products] top_n не число — лимит не применён")
+                params["top_n"] = int(top_n)
+                limit_clause = "LIMIT :top_n"
 
-            # -------------------
-            # Ключевое исправление:
-            # timestamp в ORDER BY → корректный выбор "последней записи дня"
-            # -------------------
+            # --- КОРРЕКТНЫЙ DISTINCT ON ---
             dedup_subquery = f"""
                 SELECT DISTINCT ON (товар_id, склад, дата)
                        дата,
@@ -467,14 +437,12 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                        пополнение
                 FROM alyans_refresh_v3
                 WHERE {where_clause}
-                ORDER BY товар_id, склад, дата, timestamp DESC
+                ORDER BY товар_id, склад, дата DESC
             """
 
-            # -------------------
-            # Основной запрос
-            # -------------------
             if aggregate:
                 sql = f"""
+                    WITH daily AS ({dedup_subquery})
                     SELECT
                         товар_id,
                         MAX(артикул) AS артикул,
@@ -482,14 +450,16 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                         MAX(наименование) AS наименование,
                         SUM(продано) AS всего_продано,
                         SUM(пополнение) AS всего_пополнено
-                    FROM ({dedup_subquery}) AS latest
+                    FROM daily
                     GROUP BY товар_id
                     HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
-                    {limit_clause}
+                    {limit_clause};
                 """
+
             else:
                 sql = f"""
+                    WITH daily AS ({dedup_subquery})
                     SELECT
                         склад,
                         товар_id,
@@ -498,23 +468,19 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                         MAX(наименование) AS наименование,
                         SUM(продано) AS всего_продано,
                         SUM(пополнение) AS всего_пополнено
-                    FROM ({dedup_subquery}) AS latest
+                    FROM daily
                     GROUP BY склад, товар_id
                     HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
-                    {limit_clause}
+                    {limit_clause};
                 """
 
             res = conn.execute(text(sql), params)
             df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
-        # -------------------
-        # Приведение типов
-        # -------------------
         if not df.empty:
-            for col in ["всего_продано", "всего_пополнено"]:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+            df["всего_продано"] = df["всего_продано"].astype(int)
+            df["всего_пополнено"] = df["всего_пополнено"].astype(int)
 
         return df
 
