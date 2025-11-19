@@ -341,33 +341,42 @@ def get_unique_articles():
 def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=None):
     """
     Возвращает TOP товаров.
-    Исправление: предварительно берём только последние строки по (товар_id, склад, дата)
-    (аналогично drop_duplicates(subset=['дата','склад'], keep='last') в get_product_timeseries),
-    а затем агрегируем SUM(продано), SUM(пополнение).
-    Если top_n is None — лимит не применяется.
+    Исправление 2025-02-xx:
+    В подзапросе берём действительно ПОСЛЕДНЮЮ строку за день для (товар_id, склад, дата)
+    с использованием ORDER BY ... дата ASC, timestamp DESC.
+    Это полностью синхронизирует данные таблицы с данными графика.
     """
+
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
 
     params = {}
     where = ["1=1"]
 
-    # --- Фильтр по складам ---
+    # -------------------
+    # Фильтр по складам
+    # -------------------
     if sklads:
         where.append("склад = ANY(:sklads)")
         params["sklads"] = sklads
 
-    # --- Фильтр по группам ---
+    # -------------------
+    # Фильтр по группам
+    # -------------------
     if groups:
         where.append("группа = ANY(:groups)")
         params["groups"] = groups
 
-    # --- Фильтр по артикулу ---
+    # -------------------
+    # Фильтр по артикулу
+    # -------------------
     if artikul:
         params["artikul"] = str(artikul)
         where.append("(артикул_производителя = :artikul OR артикул = :artikul OR товар_id = :artikul)")
 
-    # --- Проектные группы (как было) ---
+    # -------------------
+    # Проектные группы
+    # -------------------
     korea_groups = [
         "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
         "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
@@ -409,25 +418,31 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
         where.append("дата >= :start_date")
         params["korea_groups"] = korea_groups
         where.append("группа = ANY(:korea_groups)")
+
     elif project == "Китай":
         params["start_date"] = datetime.utcnow().date() - timedelta(days=365)
         where.append("дата >= :start_date")
         params["china_groups"] = china_groups
         where.append("группа = ANY(:china_groups)")
 
-    # --- Защита от очень широкого запроса ---
+    # -------------------
+    # Защита от широкого запроса
+    # -------------------
     if not sklads and not groups and not project and not artikul:
         logger.warning("⚠️ Слишком широкий запрос без фильтров — пропущен.")
         return pd.DataFrame()
 
     where_clause = " AND ".join(where)
 
-    # когда агрегируем по товару (нет/много складов) — aggregate True
+    # aggregate: True если много складов или их нет
     aggregate = (not sklads) or (len(sklads) > 1)
 
     try:
         with engine.connect() as conn:
-            # лимит только если top_n задан (не None)
+
+            # -------------------
+            # LIMIT
+            # -------------------
             limit_clause = ""
             if top_n is not None:
                 try:
@@ -436,20 +451,29 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                 except Exception:
                     logger.debug("[get_top_products] top_n не число — лимит не применён")
 
-            # --- Подзапрос: берём "последние" строки по (товар_id, склад, дата) ---
-            # DISTINCT ON требует ORDER BY с первым полем(ами) совпадающими с DISTINCT ON.
-            # Мы сортируем по товар_id, склад, дата DESC чтобы брать последнюю запись для каждой (товар,склад,дата).
+            # -------------------
+            # Ключевое исправление:
+            # timestamp в ORDER BY → корректный выбор "последней записи дня"
+            # -------------------
             dedup_subquery = f"""
                 SELECT DISTINCT ON (товар_id, склад, дата)
-                       дата, склад, товар_id, артикул, артикул_производителя, наименование,
-                       продано, пополнение
+                       дата,
+                       склад,
+                       товар_id,
+                       артикул,
+                       артикул_производителя,
+                       наименование,
+                       продано,
+                       пополнение
                 FROM alyans_refresh_v3
                 WHERE {where_clause}
-                ORDER BY товар_id, склад, дата DESC
+                ORDER BY товар_id, склад, дата, timestamp DESC
             """
 
+            # -------------------
+            # Основной запрос
+            # -------------------
             if aggregate:
-                # агрегируем по товару (суммируем по всем складам)
                 sql = f"""
                     SELECT
                         товар_id,
@@ -458,16 +482,13 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                         MAX(наименование) AS наименование,
                         SUM(продано) AS всего_продано,
                         SUM(пополнение) AS всего_пополнено
-                    FROM (
-                        {dedup_subquery}
-                    ) AS latest
+                    FROM ({dedup_subquery}) AS latest
                     GROUP BY товар_id
                     HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
                     {limit_clause}
                 """
             else:
-                # агрегируем по складу + товар
                 sql = f"""
                     SELECT
                         склад,
@@ -477,25 +498,23 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                         MAX(наименование) AS наименование,
                         SUM(продано) AS всего_продано,
                         SUM(пополнение) AS всего_пополнено
-                    FROM (
-                        {dedup_subquery}
-                    ) AS latest
+                    FROM ({dedup_subquery}) AS latest
                     GROUP BY склад, товар_id
                     HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
                     {limit_clause}
                 """
 
-            logger.debug(f"[get_top_products] executing SQL aggregate={aggregate} top_n={top_n} params_keys={list(params.keys())}")
             res = conn.execute(text(sql), params)
             df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
-        if df.empty:
-            return df
-
-        for col in ["всего_продано", "всего_пополнено"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+        # -------------------
+        # Приведение типов
+        # -------------------
+        if not df.empty:
+            for col in ["всего_продано", "всего_пополнено"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
         return df
 
