@@ -341,13 +341,14 @@ def get_unique_articles():
 def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=None):
     """
     Возвращает TOP товаров.
-    Если top_n is None — НЕ накладываем LIMIT (используется, когда нужен полный набор по артикулу).
-    Сохраняет фильтры по складам, группам и проектам.
+    Исправление: предварительно берём только последние строки по (товар_id, склад, дата)
+    (аналогично drop_duplicates(subset=['дата','склад'], keep='last') в get_product_timeseries),
+    а затем агрегируем SUM(продано), SUM(пополнение).
+    Если top_n is None — лимит не применяется.
     """
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
 
-    # --- Параметры и where ---
     params = {}
     where = ["1=1"]
 
@@ -361,7 +362,7 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
         where.append("группа = ANY(:groups)")
         params["groups"] = groups
 
-    # --- Фильтр по артикулу (проверяем артикул_производителя/артикул/товар_id) ---
+    # --- Фильтр по артикулу ---
     if artikul:
         params["artikul"] = str(artikul)
         where.append("(артикул_производителя = :artikul OR артикул = :artikul OR товар_id = :artikul)")
@@ -414,7 +415,7 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
         params["china_groups"] = china_groups
         where.append("группа = ANY(:china_groups)")
 
-    # --- Защита от слишком широкого запроса ---
+    # --- Защита от очень широкого запроса ---
     if not sklads and not groups and not project and not artikul:
         logger.warning("⚠️ Слишком широкий запрос без фильтров — пропущен.")
         return pd.DataFrame()
@@ -426,49 +427,66 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
 
     try:
         with engine.connect() as conn:
-            # формируем LIMIT только если top_n задан (не None)
+            # лимит только если top_n задан (не None)
             limit_clause = ""
             if top_n is not None:
                 try:
                     params["top_n"] = int(top_n)
                     limit_clause = "LIMIT :top_n"
                 except Exception:
-                    # если top_n не приводится — игнорируем лимит (безопасно)
                     logger.debug("[get_top_products] top_n не число — лимит не применён")
 
+            # --- Подзапрос: берём "последние" строки по (товар_id, склад, дата) ---
+            # DISTINCT ON требует ORDER BY с первым полем(ами) совпадающими с DISTINCT ON.
+            # Мы сортируем по товар_id, склад, дата DESC чтобы брать последнюю запись для каждой (товар,склад,дата).
+            dedup_subquery = f"""
+                SELECT DISTINCT ON (товар_id, склад, дата)
+                       дата, склад, товар_id, артикул, артикул_производителя, наименование,
+                       продано, пополнение
+                FROM alyans_refresh_v3
+                WHERE {where_clause}
+                ORDER BY товар_id, склад, дата DESC
+            """
+
             if aggregate:
+                # агрегируем по товару (суммируем по всем складам)
                 sql = f"""
-                    SELECT товар_id,
-                           артикул,
-                           артикул_производителя,
-                           наименование,
-                           SUM(продано) AS всего_продано,
-                           SUM(пополнение) AS всего_пополнено
-                    FROM alyans_refresh_v3
-                    WHERE {where_clause}
-                    GROUP BY товар_id, артикул, артикул_производителя, наименование
+                    SELECT
+                        товар_id,
+                        MAX(артикул) AS артикул,
+                        MAX(артикул_производителя) AS артикул_производителя,
+                        MAX(наименование) AS наименование,
+                        SUM(продано) AS всего_продано,
+                        SUM(пополнение) AS всего_пополнено
+                    FROM (
+                        {dedup_subquery}
+                    ) AS latest
+                    GROUP BY товар_id
                     HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
                     {limit_clause}
                 """
             else:
+                # агрегируем по складу + товар
                 sql = f"""
-                    SELECT склад,
-                           товар_id,
-                           артикул,
-                           артикул_производителя,
-                           наименование,
-                           SUM(продано) AS всего_продано,
-                           SUM(пополнение) AS всего_пополнено
-                    FROM alyans_refresh_v3
-                    WHERE {where_clause}
-                    GROUP BY склад, товар_id, артикул, артикул_производителя, наименование
+                    SELECT
+                        склад,
+                        товар_id,
+                        MAX(артикул) AS артикул,
+                        MAX(артикул_производителя) AS артикул_производителя,
+                        MAX(наименование) AS наименование,
+                        SUM(продано) AS всего_продано,
+                        SUM(пополнение) AS всего_пополнено
+                    FROM (
+                        {dedup_subquery}
+                    ) AS latest
+                    GROUP BY склад, товар_id
                     HAVING SUM(продано) > 0
                     ORDER BY всего_продано DESC
                     {limit_clause}
                 """
 
-            logger.debug(f"[get_top_products] SQL len params={len(params)} aggregate={aggregate} top_n={top_n}")
+            logger.debug(f"[get_top_products] executing SQL aggregate={aggregate} top_n={top_n} params_keys={list(params.keys())}")
             res = conn.execute(text(sql), params)
             df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
