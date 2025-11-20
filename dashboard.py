@@ -346,12 +346,12 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
 
     # --- Фильтр по складам ---
     if sklads:
-        where.append("склад = ANY(:sklads::text[])")
+        where.append("склад = ANY(ARRAY[:sklads])")
         params["sklads"] = sklads
 
     # --- Фильтр по группам ---
     if groups:
-        where.append("группа = ANY(:groups::text[])")
+        where.append("группа = ANY(ARRAY[:groups])")
         params["groups"] = groups
 
     # --- Фильтр по артикулу ---
@@ -397,14 +397,13 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
     ]
 
     if project == "Корея":
-        where.append("группа = ANY(:korea_groups::text[])")
+        where.append("группа = ANY(ARRAY[:korea_groups])")
         params["korea_groups"] = korea_groups
 
     elif project == "Китай":
-        where.append("группа = ANY(:china_groups::text[])")
+        where.append("группа = ANY(ARRAY[:china_groups])")
         params["china_groups"] = china_groups
 
-    # --- Защита от слишком широкого запроса ---
     if not sklads and not groups and not project and not artikul:
         return pd.DataFrame()
 
@@ -426,13 +425,11 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                 WHERE {where_clause}
                 ORDER BY дата, склад, товар_id, время DESC NULLS LAST
             """
-
             daily = pd.read_sql(sql_daily, conn, params=params)
 
         if daily.empty:
             return daily
 
-        # --- Суммирование итогов ---
         top = (
             daily.groupby("товар_id", as_index=False)
             .agg({
@@ -442,10 +439,7 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                 "продано": "sum",
                 "пополнение": "sum",
             })
-            .rename(columns={
-                "продано": "всего_продано",
-                "пополнение": "всего_пополнено"
-            })
+            .rename(columns={"продано": "всего_продано", "пополнение": "всего_пополнено"})
             .sort_values("всего_продано", ascending=False)
         )
 
@@ -459,8 +453,6 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
         return pd.DataFrame()
 
 
-
-
 def get_product_timeseries(tovar_id=None, sklads=None, project=None):
 
     if not tovar_id:
@@ -470,12 +462,10 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
     params = {"tovar_id": str(tovar_id)}
     where = ["(товар_id = :tovar_id OR артикул = :tovar_id)"]
 
-    # Фильтр по складам
     if sklads:
-        where.append("склад = ANY(:sklads::text[])")
+        where.append("склад = ANY(ARRAY[:sklads])")
         params["sklads"] = sklads
 
-    # --- Проектные группы ---
     korea_groups = [
         "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
         "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
@@ -513,11 +503,11 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
     ]
 
     if project == "Корея":
-        where.append("группа = ANY(:korea_groups::text[])")
+        where.append("группа = ANY(ARRAY[:korea_groups])")
         params["korea_groups"] = korea_groups
 
     elif project == "Китай":
-        where.append("группа = ANY(:china_groups::text[])")
+        where.append("группа = ANY(ARRAY[:china_groups])")
         params["china_groups"] = china_groups
 
     sql = f"""
@@ -539,7 +529,6 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
         for col in ["остаток", "продано", "пополнение", "цена"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-        # --- Берём последнюю запись дня ---
         df = (
             df.sort_values(["дата", "склад"])
               .drop_duplicates(subset=["дата", "склад"], keep="last")
@@ -551,6 +540,7 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
     except Exception:
         logger.exception("[get_product_timeseries] Ошибка")
         return pd.DataFrame()
+
 
 
 
