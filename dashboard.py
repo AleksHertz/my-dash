@@ -344,22 +344,18 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
     params = {}
     where = ["1=1"]
 
-    # --- Фильтр по складам ---
     if sklads:
         where.append("склад = ANY(ARRAY[:sklads])")
         params["sklads"] = sklads
 
-    # --- Фильтр по группам ---
     if groups:
         where.append("группа = ANY(ARRAY[:groups])")
         params["groups"] = groups
 
-    # --- Фильтр по артикулу ---
     if artikul:
         params["artikul"] = str(artikul)
         where.append("(артикул_производителя = :artikul OR артикул = :artikul OR товар_id = :artikul)")
 
-    # --- Полные проектные группы ---
     korea_groups = [
         "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
         "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
@@ -399,7 +395,6 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
     if project == "Корея":
         where.append("группа = ANY(ARRAY[:korea_groups])")
         params["korea_groups"] = korea_groups
-
     elif project == "Китай":
         where.append("группа = ANY(ARRAY[:china_groups])")
         params["china_groups"] = china_groups
@@ -411,24 +406,21 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
 
     try:
         with engine.connect() as conn:
-            sql_daily = f"""
+            sql = f"""
                 SELECT DISTINCT ON (дата, склад, товар_id)
-                    дата,
-                    склад,
-                    товар_id,
-                    артикул,
-                    артикул_производителя,
-                    наименование,
-                    продано,
-                    пополнение
+                    дата, склад, товар_id, артикул, артикул_производителя,
+                    наименование, продано, пополнение, цена
                 FROM alyans_refresh_v3
                 WHERE {where_clause}
                 ORDER BY дата, склад, товар_id, время DESC NULLS LAST
             """
-            daily = pd.read_sql(sql_daily, conn, params=params)
+            daily = pd.read_sql(sql, conn, params=params)
 
         if daily.empty:
             return daily
+
+        for col in ["продано", "пополнение", "цена"]:
+            daily[col] = pd.to_numeric(daily[col], errors="coerce").fillna(0)
 
         top = (
             daily.groupby("товар_id", as_index=False)
@@ -438,6 +430,7 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                 "наименование": "last",
                 "продано": "sum",
                 "пополнение": "sum",
+                "цена": "last"
             })
             .rename(columns={"продано": "всего_продано", "пополнение": "всего_пополнено"})
             .sort_values("всего_продано", ascending=False)
@@ -449,12 +442,11 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
         return top
 
     except Exception as e:
-        print(f"[get_top_products] Ошибка: {e}")
+        logger.exception(f"[get_top_products] Ошибка: {e}")
         return pd.DataFrame()
 
 
 def get_product_timeseries(tovar_id=None, sklads=None, project=None):
-
     if not tovar_id:
         return pd.DataFrame()
 
@@ -505,21 +497,22 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
     if project == "Корея":
         where.append("группа = ANY(ARRAY[:korea_groups])")
         params["korea_groups"] = korea_groups
-
     elif project == "Китай":
         where.append("группа = ANY(ARRAY[:china_groups])")
         params["china_groups"] = china_groups
 
-    sql = f"""
-        SELECT дата, склад, товар_id, артикул, наименование,
-               остаток, продано, пополнение, цена
-        FROM alyans_refresh_v3
-        WHERE {' AND '.join(where)}
-        ORDER BY дата ASC
-    """
+    where_clause = " AND ".join(where)
 
     try:
         with engine.connect() as conn:
+            sql = f"""
+                SELECT DISTINCT ON (дата, склад, товар_id)
+                    дата, склад, товар_id, артикул, артикул_производителя,
+                    наименование, остаток, продано, пополнение, цена
+                FROM alyans_refresh_v3
+                WHERE {where_clause}
+                ORDER BY дата, склад, товар_id, время DESC NULLS LAST
+            """
             df = pd.read_sql(sql, conn, params=params)
 
         if df.empty:
@@ -529,17 +522,14 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
         for col in ["остаток", "продано", "пополнение", "цена"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-        df = (
-            df.sort_values(["дата", "склад"])
-              .drop_duplicates(subset=["дата", "склад"], keep="last")
-              .reset_index(drop=True)
-        )
+        df = df.sort_values(["дата", "склад"]).reset_index(drop=True)
 
         return df
 
     except Exception:
         logger.exception("[get_product_timeseries] Ошибка")
         return pd.DataFrame()
+
 
 
 
