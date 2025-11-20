@@ -491,7 +491,6 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
 
 
 
-# ---------- Временной ряд ----------
 def get_product_timeseries(tovar_id=None, sklads=None, project=None):
     """
     Возвращает временной ряд по товару для графика.
@@ -524,12 +523,7 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
         "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
     ]
 
-    if project == "Корея":
-        where.append("группа = ANY(:korea_groups)")
-        params["korea_groups"] = korea_groups
-   elif project == "Китай":
-    where.append("группа = ANY(:china_groups)")
-    params["china_groups"] = [
+    china_groups = [
         "ПРОЕКТ КАМАЗ ГОРОД\\КИТАЙ-КАМАЗ",
         "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\SHACMAN OE",
         "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\HOWO SITRAK",
@@ -551,6 +545,15 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
         "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\WEICHAI",
     ]
 
+    if project == "Корея":
+        where.append("группа = ANY(:korea_groups)")
+        params["korea_groups"] = korea_groups
+
+    elif project == "Китай":
+        where.append("группа = ANY(:china_groups)")
+        params["china_groups"] = china_groups
+
+    # --- SQL ---
     sql = f"""
         SELECT дата, склад, товар_id, артикул, наименование,
                остаток, продано, пополнение, цена
@@ -584,6 +587,7 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
     except Exception:
         logger.exception("[get_product_timeseries] Ошибка получения временного ряда")
         return pd.DataFrame()
+
 
 
 # --- Функции подготовки данных ---
