@@ -41,7 +41,7 @@ from datetime import date
 from typing import Optional
 # ------------------
 # НАСТРОЙК
-# -------------------
+# -----------------
 HEIGHT_PER_BAR = 30  # высота одной строки в px
 MAX_VISIBLE_BARS = 50  # сколько строк показывать без прокрутки
 MAX_HEIGHT = HEIGHT_PER_BAR * MAX_VISIBLE_BARS  # высота контейнера в px
