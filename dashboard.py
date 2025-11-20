@@ -40,7 +40,7 @@ from difflib import get_close_matches
 from datetime import date
 from typing import Optional
 # -------------------
-# НАСТРОЙКИ
+# НАСТРОЙК
 # -------------------
 HEIGHT_PER_BAR = 30  # высота одной строки в px
 MAX_VISIBLE_BARS = 50  # сколько строк показывать без прокрутки
