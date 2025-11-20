@@ -337,7 +337,6 @@ def get_unique_articles():
         return []
 
     
-# ---------- ТОП товаров ----------
 def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=None):
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
@@ -400,102 +399,69 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
     if project == "Корея":
         where.append("группа = ANY(:korea_groups)")
         params["korea_groups"] = korea_groups
+
     elif project == "Китай":
         where.append("группа = ANY(:china_groups)")
         params["china_groups"] = china_groups
 
     # --- Защита от слишком широкого запроса ---
     if not sklads and not groups and not project and not artikul:
-        print("⚠️ Слишком широкий запрос без фильтров — возвращаем пустой DataFrame")
         return pd.DataFrame()
 
     where_clause = " AND ".join(where)
-    aggregate = (not sklads) or (len(sklads) > 1)
 
     try:
         with engine.connect() as conn:
-            limit_clause = ""
-            if top_n is not None:
-                try:
-                    params["top_n"] = int(top_n)
-                    limit_clause = "LIMIT :top_n"
-                except Exception:
-                    print("[get_top_products] top_n не число — лимит не применён")
 
-            # --- Суммируем по дню, как график ---
-            raw_daily = f"""
-                SELECT
+            # --- БЕРЁМ ПОСЛЕДНЮЮ ЗАПИСЬ ДНЯ, КАК ГРАФИК ---
+            sql_daily = f"""
+                SELECT DISTINCT ON (дата, склад, товар_id)
                     дата,
                     склад,
                     товар_id,
                     артикул,
                     артикул_производителя,
                     наименование,
-                    SUM(продано) AS продано,
-                    SUM(пополнение) AS пополнение
+                    продано,
+                    пополнение
                 FROM alyans_refresh_v3
                 WHERE {where_clause}
-                GROUP BY дата, склад, товар_id, артикул, артикул_производителя, наименование
+                ORDER BY дата, склад, товар_id, время DESC NULLS LAST
             """
 
-            if aggregate:
-                sql = f"""
-                    WITH daily AS ({raw_daily})
-                    SELECT
-                        товар_id,
-                        MAX(артикул) AS артикул,
-                        MAX(артикул_производителя) AS артикул_производителя,
-                        MAX(наименование) AS наименование,
-                        SUM(продано) AS всего_продано,
-                        SUM(пополнение) AS всего_пополнено
-                    FROM daily
-                    GROUP BY товар_id
-                    HAVING SUM(продано) > 0
-                    ORDER BY всего_продано DESC
-                    {limit_clause};
-                """
-            else:
-                sql = f"""
-                    WITH daily AS ({raw_daily})
-                    SELECT
-                        склад,
-                        товар_id,
-                        MAX(артикул) AS артикул,
-                        MAX(артикул_производителя) AS артикул_производителя,
-                        MAX(наименование) AS наименование,
-                        SUM(продано) AS всего_продано,
-                        SUM(пополнение) AS всего_пополнено
-                    FROM daily
-                    GROUP BY склад, товар_id
-                    HAVING SUM(продано) > 0
-                    ORDER BY всего_продано DESC
-                    {limit_clause};
-                """
+            daily = pd.read_sql(sql_daily, conn, params=params)
 
-            print(f"[get_top_products] SQL выполняется, aggregate={aggregate}, params={list(params.keys())}")
-            res = conn.execute(text(sql), params)
-            df = pd.DataFrame(res.fetchall(), columns=res.keys())
+        if daily.empty:
+            return daily
 
-        if not df.empty:
-            df["всего_продано"] = df["всего_продано"].astype(int)
-            df["всего_пополнено"] = df["всего_пополнено"].astype(int)
+        # --- Суммируем итоговые продажи по дням ---
+        top = (
+            daily.groupby("товар_id", as_index=False)
+            .agg({
+                "артикул": "last",
+                "артикул_производителя": "last",
+                "наименование": "last",
+                "продано": "sum",
+                "пополнение": "sum",
+            })
+            .rename(columns={"продано": "всего_продано",
+                             "пополнение": "всего_пополнено"})
+            .sort_values("всего_продано", ascending=False)
+        )
 
-        return df
+        if top_n:
+            top = top.head(int(top_n))
+
+        return top
 
     except Exception as e:
-        print(f"[get_top_products] Ошибка получения ТОП товаров: {e}")
+        print(f"[get_top_products] Ошибка: {e}")
         return pd.DataFrame()
 
 
 
-
-
-
 def get_product_timeseries(tovar_id=None, sklads=None, project=None):
-    """
-    Возвращает временной ряд по товару для графика.
-    Поддерживает фильтры по складу, проекту и артикулу/товар_id.
-    """
+
     if not tovar_id:
         return pd.DataFrame()
 
@@ -503,12 +469,12 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
     params = {"tovar_id": str(tovar_id)}
     where = ["(товар_id = :tovar_id OR артикул = :tovar_id)"]
 
-    # --- 🔹 Фильтр по складам ---
+    # Фильтр по складам
     if sklads:
         where.append("склад = ANY(:sklads)")
         params["sklads"] = sklads
 
-    # --- 🔹 Проектные группы ---
+    # --- Проектные группы (те же!) ---
     korea_groups = [
         "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
         "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
@@ -553,7 +519,6 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
         where.append("группа = ANY(:china_groups)")
         params["china_groups"] = china_groups
 
-    # --- SQL ---
     sql = f"""
         SELECT дата, склад, товар_id, артикул, наименование,
                остаток, продано, пополнение, цена
@@ -564,20 +529,18 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
 
     try:
         with engine.connect() as conn:
-            res = conn.execute(text(sql), params)
-            df = pd.DataFrame(res.fetchall(), columns=res.keys())
+            df = pd.read_sql(sql, conn, params=params)
 
         if df.empty:
             return df
 
-        # --- Приведение типов ---
         df["дата"] = pd.to_datetime(df["дата"], errors="coerce")
         for col in ["остаток", "продано", "пополнение", "цена"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-        # --- Удаляем дубликаты по дате/складу ---
+        # --- берем последнюю запись дня ---
         df = (
-            df.sort_values("дата")
+            df.sort_values(["дата", "склад"])
               .drop_duplicates(subset=["дата", "склад"], keep="last")
               .reset_index(drop=True)
         )
@@ -585,7 +548,7 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
         return df
 
     except Exception:
-        logger.exception("[get_product_timeseries] Ошибка получения временного ряда")
+        logger.exception("[get_product_timeseries] Ошибка")
         return pd.DataFrame()
 
 
