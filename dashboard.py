@@ -346,12 +346,12 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
 
     # --- Фильтр по складам ---
     if sklads:
-        where.append("склад = ANY(:sklads)")
+        where.append("склад = ANY(:sklads::text[])")
         params["sklads"] = sklads
 
     # --- Фильтр по группам ---
     if groups:
-        where.append("группа = ANY(:groups)")
+        where.append("группа = ANY(:groups::text[])")
         params["groups"] = groups
 
     # --- Фильтр по артикулу ---
@@ -397,11 +397,11 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
     ]
 
     if project == "Корея":
-        where.append("группа = ANY(:korea_groups)")
+        where.append("группа = ANY(:korea_groups::text[])")
         params["korea_groups"] = korea_groups
 
     elif project == "Китай":
-        where.append("группа = ANY(:china_groups)")
+        where.append("группа = ANY(:china_groups::text[])")
         params["china_groups"] = china_groups
 
     # --- Защита от слишком широкого запроса ---
@@ -412,8 +412,6 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
 
     try:
         with engine.connect() as conn:
-
-            # --- БЕРЁМ ПОСЛЕДНЮЮ ЗАПИСЬ ДНЯ, КАК ГРАФИК ---
             sql_daily = f"""
                 SELECT DISTINCT ON (дата, склад, товар_id)
                     дата,
@@ -434,7 +432,7 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
         if daily.empty:
             return daily
 
-        # --- Суммируем итоговые продажи по дням ---
+        # --- Суммирование итогов ---
         top = (
             daily.groupby("товар_id", as_index=False)
             .agg({
@@ -444,8 +442,10 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                 "продано": "sum",
                 "пополнение": "sum",
             })
-            .rename(columns={"продано": "всего_продано",
-                             "пополнение": "всего_пополнено"})
+            .rename(columns={
+                "продано": "всего_продано",
+                "пополнение": "всего_пополнено"
+            })
             .sort_values("всего_продано", ascending=False)
         )
 
@@ -460,6 +460,7 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
 
 
 
+
 def get_product_timeseries(tovar_id=None, sklads=None, project=None):
 
     if not tovar_id:
@@ -471,10 +472,10 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
 
     # Фильтр по складам
     if sklads:
-        where.append("склад = ANY(:sklads)")
+        where.append("склад = ANY(:sklads::text[])")
         params["sklads"] = sklads
 
-    # --- Проектные группы (те же!) ---
+    # --- Проектные группы ---
     korea_groups = [
         "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
         "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
@@ -512,11 +513,11 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
     ]
 
     if project == "Корея":
-        where.append("группа = ANY(:korea_groups)")
+        where.append("группа = ANY(:korea_groups::text[])")
         params["korea_groups"] = korea_groups
 
     elif project == "Китай":
-        where.append("группа = ANY(:china_groups)")
+        where.append("группа = ANY(:china_groups::text[])")
         params["china_groups"] = china_groups
 
     sql = f"""
@@ -538,7 +539,7 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
         for col in ["остаток", "продано", "пополнение", "цена"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-        # --- берем последнюю запись дня ---
+        # --- Берём последнюю запись дня ---
         df = (
             df.sort_values(["дата", "склад"])
               .drop_duplicates(subset=["дата", "склад"], keep="last")
@@ -550,6 +551,7 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
     except Exception:
         logger.exception("[get_product_timeseries] Ошибка")
         return pd.DataFrame()
+
 
 
 
