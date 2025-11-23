@@ -458,25 +458,33 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
         return pd.DataFrame()
 
     sklads = _ensure_list(sklads)
-
     params = {"tovar_id": str(tovar_id)}
+
     where = ["(товар_id = :tovar_id OR артикул = :tovar_id)"]
 
     if sklads:
         where.append("склад = ANY(:sklads)")
         params["sklads"] = sklads
 
-    # --- Строгое совпадение логики (Вариант А) ---
     if project in PROJECT_GROUPS:
         where.append("группа = ANY(:project_groups)")
         params["project_groups"] = PROJECT_GROUPS[project]
 
     sql = f"""
-        SELECT дата, склад, товар_id, артикул, наименование,
-               остаток, продано, пополнение, цена
+        SELECT
+            дата,
+            склад,
+            товар_id,
+            MAX(артикул) AS артикул,
+            MAX(наименование) AS наименование,
+            SUM(остаток) AS остаток,
+            SUM(продано) AS продано,
+            SUM(пополнение) AS пополнение,
+            AVG(цена) AS цена
         FROM alyans_refresh_v3
         WHERE {' AND '.join(where)}
-        ORDER BY дата ASC
+        GROUP BY дата, склад, товар_id
+        ORDER BY дата
     """
 
     try:
@@ -488,14 +496,9 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
             return df
 
         df["дата"] = pd.to_datetime(df["дата"], errors="coerce")
-        for col in ["остаток", "продано", "пополнение", "цена"]:
+        numeric_cols = ["остаток", "продано", "пополнение", "цена"]
+        for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-
-        df = (
-            df.sort_values("дата")
-              .drop_duplicates(subset=["дата", "склад"], keep="last")
-              .reset_index(drop=True)
-        )
 
         return df
 
