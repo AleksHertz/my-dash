@@ -336,8 +336,44 @@ def get_unique_articles():
         logger.exception("[get_unique_articles] Ошибка при получении списка артикулов")
         return []
 
-    
-# ---------- ТОП товаров ----------
+PROJECT_GROUPS = {
+    "Корея": [
+        "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
+        "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
+        "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
+        "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
+        "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
+        "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
+        "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
+    ],
+    "Китай": [
+        "ПРОЕКТ КАМАЗ ГОРОД\\КИТАЙ-КАМАЗ",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\SHACMAN OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\HOWO SITRAK",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ГРУЗОВОЙ OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\FAW OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ЛЕГКОВОЙ OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\DONGFENG ОБЩАЯ\\DONGFENG OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\FOTON OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-JAC",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ЦС",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-SHACMAN",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-SITRAK",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\КАМАЗ КОМПАС",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\+КИТАЙ ГРУЗОВЫЕ ОПТ-УЦЕНКА",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\+КИТАЙ ГРУЗОВЫЕ ОПТ-ЗАКРЫТО",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\CREATEK",
+        "ПРОЕКТ МАЗ\\КИТАЙ-МАЗ",
+        "ПРОЕКТ ПНЕВМО\\ПНЕВМО-КИТАЙ",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\WEICHAI",
+    ]
+}
+
+
 def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=None):
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
@@ -360,119 +396,50 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
         params["artikul"] = str(artikul)
         where.append("(артикул_производителя = :artikul OR артикул = :artikul OR товар_id = :artikul)")
 
-    # --- Полные проектные группы ---
-    korea_groups = [
-        "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
-        "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
-        "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
-        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
-        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
-        "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
-        "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
-        "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
-        "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
-        "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
-        "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
-    ]
-
-    china_groups = [
-        "ПРОЕКТ КАМАЗ ГОРОД\\КИТАЙ-КАМАЗ",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\SHACMAN OE",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\HOWO SITRAK",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ГРУЗОВОЙ OE",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\FAW OE",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ЛЕГКОВОЙ OE",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\DONGFENG ОБЩАЯ\\DONGFENG OE",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\FOTON OE",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-JAC",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ЦС",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-SHACMAN",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-SITRAK",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\КАМАЗ КОМПАС",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\+КИТАЙ ГРУЗОВЫЕ ОПТ-УЦЕНКА",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\+КИТАЙ ГРУЗОВЫЕ ОПТ-ЗАКРЫТО",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\CREATEK",
-        "ПРОЕКТ МАЗ\\КИТАЙ-МАЗ",
-        "ПРОЕКТ ПНЕВМО\\ПНЕВМО-КИТАЙ",
-        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\WEICHAI",
-    ]
-
-    if project == "Корея":
-        where.append("группа = ANY(:korea_groups)")
-        params["korea_groups"] = korea_groups
-    elif project == "Китай":
-        where.append("группа = ANY(:china_groups)")
-        params["china_groups"] = china_groups
+    # --- Проектные группы (строгий Вариант А) ---
+    if project in PROJECT_GROUPS:
+        where.append("группа = ANY(:project_groups)")
+        params["project_groups"] = PROJECT_GROUPS[project]
 
     # --- Защита от слишком широкого запроса ---
     if not sklads and not groups and not project and not artikul:
-        print("⚠️ Слишком широкий запрос без фильтров — возвращаем пустой DataFrame")
         return pd.DataFrame()
 
     where_clause = " AND ".join(where)
-    aggregate = (not sklads) or (len(sklads) > 1)
 
     try:
         with engine.connect() as conn:
-            limit_clause = ""
-            if top_n is not None:
-                try:
-                    params["top_n"] = int(top_n)
-                    limit_clause = "LIMIT :top_n"
-                except Exception:
-                    print("[get_top_products] top_n не число — лимит не применён")
+            # Лимит
+            params["top_n"] = int(top_n)
 
-            # --- Суммируем по дню, как график ---
-            raw_daily = f"""
-                SELECT
-                    дата,
-                    склад,
-                    товар_id,
-                    артикул,
-                    артикул_производителя,
-                    наименование,
-                    SUM(продано) AS продано,
-                    SUM(пополнение) AS пополнение
-                FROM alyans_refresh_v3
-                WHERE {where_clause}
-                GROUP BY дата, склад, товар_id, артикул, артикул_производителя, наименование
-            """
-
-            if aggregate:
-                sql = f"""
-                    WITH daily AS ({raw_daily})
+            sql = f"""
+                WITH daily AS (
                     SELECT
-                        товар_id,
-                        MAX(артикул) AS артикул,
-                        MAX(артикул_производителя) AS артикул_производителя,
-                        MAX(наименование) AS наименование,
-                        SUM(продано) AS всего_продано,
-                        SUM(пополнение) AS всего_пополнено
-                    FROM daily
-                    GROUP BY товар_id
-                    HAVING SUM(продано) > 0
-                    ORDER BY всего_продано DESC
-                    {limit_clause};
-                """
-            else:
-                sql = f"""
-                    WITH daily AS ({raw_daily})
-                    SELECT
+                        дата,
                         склад,
                         товар_id,
-                        MAX(артикул) AS артикул,
-                        MAX(артикул_производителя) AS артикул_производителя,
-                        MAX(наименование) AS наименование,
-                        SUM(продано) AS всего_продано,
-                        SUM(пополнение) AS всего_пополнено
-                    FROM daily
-                    GROUP BY склад, товар_id
-                    HAVING SUM(продано) > 0
-                    ORDER BY всего_продано DESC
-                    {limit_clause};
-                """
+                        артикул,
+                        артикул_производителя,
+                        наименование,
+                        SUM(продано) AS продано,
+                        SUM(пополнение) AS пополнение
+                    FROM alyans_refresh_v3
+                    WHERE {where_clause}
+                    GROUP BY дата, склад, товар_id, артикул, артикул_производителя, наименование
+                )
+                SELECT
+                    товар_id,
+                    MAX(артикул) AS артикул,
+                    MAX(артикул_производителя) AS артикул_производителя,
+                    MAX(наименование) AS наименование,
+                    SUM(продано) AS всего_продано,
+                    SUM(пополнение) AS всего_пополнено
+                FROM daily
+                GROUP BY товар_id
+                ORDER BY всего_продано DESC
+                LIMIT :top_n;
+            """
 
-            print(f"[get_top_products] SQL выполняется, aggregate={aggregate}, params={list(params.keys())}")
             res = conn.execute(text(sql), params)
             df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
@@ -483,52 +450,26 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
         return df
 
     except Exception as e:
-        print(f"[get_top_products] Ошибка получения ТОП товаров: {e}")
+        print(f"[get_top_products] Ошибка: {e}")
         return pd.DataFrame()
 
-
-
-
-
-
-# ---------- Временной ряд ----------
 def get_product_timeseries(tovar_id=None, sklads=None, project=None):
-    """
-    Возвращает временной ряд по товару для графика.
-    Поддерживает фильтры по складу, проекту и артикулу/товар_id.
-    """
     if not tovar_id:
         return pd.DataFrame()
 
     sklads = _ensure_list(sklads)
+
     params = {"tovar_id": str(tovar_id)}
     where = ["(товар_id = :tovar_id OR артикул = :tovar_id)"]
 
-    # --- 🔹 Фильтр по складам ---
     if sklads:
         where.append("склад = ANY(:sklads)")
         params["sklads"] = sklads
 
-    # --- 🔹 Проектные группы ---
-    korea_groups = [
-        "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
-        "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
-        "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
-        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
-        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
-        "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
-        "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
-        "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
-        "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
-        "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
-        "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
-    ]
-
-    if project == "Корея":
-        where.append("группа = ANY(:korea_groups)")
-        params["korea_groups"] = korea_groups
-    elif project == "Китай":
-        where.append("LOWER(группа) LIKE '%china%'")
+    # --- Строгое совпадение логики (Вариант А) ---
+    if project in PROJECT_GROUPS:
+        where.append("группа = ANY(:project_groups)")
+        params["project_groups"] = PROJECT_GROUPS[project]
 
     sql = f"""
         SELECT дата, склад, товар_id, артикул, наименование,
@@ -546,12 +487,10 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
         if df.empty:
             return df
 
-        # --- Приведение типов ---
         df["дата"] = pd.to_datetime(df["дата"], errors="coerce")
         for col in ["остаток", "продано", "пополнение", "цена"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-        # --- Удаляем дубликаты по дате/складу ---
         df = (
             df.sort_values("дата")
               .drop_duplicates(subset=["дата", "склад"], keep="last")
@@ -561,7 +500,7 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
         return df
 
     except Exception:
-        logger.exception("[get_product_timeseries] Ошибка получения временного ряда")
+        logger.exception("[get_product_timeseries] Ошибка временного ряда")
         return pd.DataFrame()
 
 
