@@ -32,7 +32,7 @@ import threading
 from datetime import datetime, timedelta
 import subprocess
 import psycopg2
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, bindparam
 from collections import defaultdict
 from sqlalchemy.exc import OperationalError
 import re
