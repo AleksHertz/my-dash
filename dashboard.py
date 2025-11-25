@@ -336,6 +336,7 @@ def get_unique_articles():
         logger.exception("[get_unique_articles] Ошибка при получении списка артикулов")
         return []
 
+# --- Проектные группы (тот же словарь, что у тебя) ---
 PROJECT_GROUPS = {
     "Корея": [
         "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
@@ -374,58 +375,96 @@ PROJECT_GROUPS = {
 }
 
 
+# --------------------
+# Helper: build where clause and bindparams (expanding lists safely)
+# --------------------
+def _build_where_and_bindparams(sklads=None, groups=None, project=None, artikul=None, extra_where=None):
+    """
+    Возвращает (where_sql_str, params_dict, bindparams_list)
+    where_sql_str содержит placeholders типа :param
+    bindparams_list содержит bindparam(..., expanding=True) для списков
+    """
+    where = []
+    params = {}
+    bind_params = []
+
+    # extra_where can be a list of prebuilt strings
+    if extra_where:
+        if isinstance(extra_where, (list, tuple)):
+            where.extend(extra_where)
+        elif isinstance(extra_where, str):
+            where.append(extra_where)
+
+    if sklads:
+        where.append("склад IN :sklads")
+        params["sklads"] = list(sklads)
+        bind_params.append(bindparam("sklads", expanding=True))
+
+    if groups:
+        where.append("группа IN :groups")
+        params["groups"] = list(groups)
+        bind_params.append(bindparam("groups", expanding=True))
+
+    if artikul:
+        where.append("(артикул_производителя = :artikul OR артикул = :artikul OR товар_id = :artikul)")
+        params["artikul"] = str(artikul)
+
+    if project and project in PROJECT_GROUPS:
+        where.append("группа IN :project_groups")
+        params["project_groups"] = list(PROJECT_GROUPS[project])
+        bind_params.append(bindparam("project_groups", expanding=True))
+
+    # default safe where
+    if not where:
+        where_sql = "1=1"
+    else:
+        where_sql = " AND ".join(where)
+
+    return where_sql, params, bind_params
+
+
+# --------------------
+# GET TOP PRODUCTS
+# --------------------
 def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=None):
+    """
+    Возвращает DataFrame топ-товаров (суммы по дням -> суммируем на уровне товара_id).
+    Логика фильтрации совпадает с get_product_timeseries (через _build_where_and_bindparams).
+    """
     sklads = _ensure_list(sklads)
     groups = _ensure_list(groups)
 
-    params = {}
-    where = ["1=1"]
-
-    # --- Фильтр по складам ---
-    if sklads:
-        where.append("склад = ANY(:sklads)")
-        params["sklads"] = sklads
-
-    # --- Фильтр по группам ---
-    if groups:
-        where.append("группа = ANY(:groups)")
-        params["groups"] = groups
-
-    # --- Фильтр по артикулу ---
-    if artikul:
-        params["artikul"] = str(artikul)
-        where.append("(артикул_производителя = :artikul OR артикул = :artikul OR товар_id = :artikul)")
-
-    # --- Проектные группы (строгий Вариант А) ---
-    if project in PROJECT_GROUPS:
-        where.append("группа = ANY(:project_groups)")
-        params["project_groups"] = PROJECT_GROUPS[project]
-
-    # --- Защита от слишком широкого запроса ---
+    # защита от слишком широкого запроса
     if not sklads and not groups and not project and not artikul:
+        # намеренно возвращаем пустой DataFrame, как раньше
         return pd.DataFrame()
 
-    where_clause = " AND ".join(where)
+    where_sql, params, bind_params = _build_where_and_bindparams(
+        sklads=sklads, groups=groups, project=project, artikul=artikul
+    )
+
+    # limit handling
+    try:
+        top_n_val = None if top_n is None else int(top_n)
+    except Exception:
+        top_n_val = 100
 
     try:
         with engine.connect() as conn:
-            # Лимит
-            params["top_n"] = int(top_n)
-
             sql = f"""
                 WITH daily AS (
                     SELECT
-                        дата,
+                        дата::date AS дата,
                         склад,
                         товар_id,
-                        артикул,
-                        артикул_производителя,
-                        наименование,
+                        MAX(артикул) AS артикул,
+                        MAX(артикул_производителя) AS артикул_производителя,
+                        MAX(наименование) AS наименование,
                         SUM(продано) AS продано,
                         SUM(пополнение) AS пополнение
                     FROM alyans_refresh_v3
-                    WHERE {where_clause}
-                    GROUP BY дата, склад, товар_id, артикул, артикул_производителя, наименование
+                    WHERE {where_sql}
+                    GROUP BY дата, склад, товар_id
                 )
                 SELECT
                     товар_id,
@@ -437,42 +476,60 @@ def get_top_products(top_n=100, sklads=None, groups=None, project=None, artikul=
                 FROM daily
                 GROUP BY товар_id
                 ORDER BY всего_продано DESC
-                LIMIT :top_n;
+                { 'LIMIT :top_n' if top_n_val is not None else '' }
             """
 
-            res = conn.execute(text(sql), params)
+            stmt = text(sql)
+            # bind expanding params if any
+            if bind_params:
+                stmt = stmt.bindparams(*bind_params)
+            # add top_n param if needed
+            if top_n_val is not None:
+                params["top_n"] = top_n_val
+
+            res = conn.execute(stmt, params)
             df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
         if not df.empty:
             df["всего_продано"] = df["всего_продано"].astype(int)
             df["всего_пополнено"] = df["всего_пополнено"].astype(int)
-
         return df
 
     except Exception as e:
-        print(f"[get_top_products] Ошибка: {e}")
+        logger.exception("[get_top_products] Ошибка получения ТОП товаров")
+        # вернуть пустой df при ошибке
         return pd.DataFrame()
 
+
+# --------------------
+# GET PRODUCT TIMESERIES
+# --------------------
 def get_product_timeseries(tovar_id=None, sklads=None, project=None):
+    """
+    Возвращает временной ряд по товару.
+    Использует ту же логику фильтрации (PROJECT_GROUPS) и ту же агрегацию по дням/складам,
+    что и get_top_products, чтобы суммы совпадали.
+    """
     if not tovar_id:
         return pd.DataFrame()
 
     sklads = _ensure_list(sklads)
-    params = {"tovar_id": str(tovar_id)}
 
-    where = ["(товар_id = :tovar_id OR артикул = :tovar_id)"]
-
-    if sklads:
-        where.append("склад = ANY(:sklads)")
-        params["sklads"] = sklads
-
-    if project in PROJECT_GROUPS:
-        where.append("группа = ANY(:project_groups)")
-        params["project_groups"] = PROJECT_GROUPS[project]
+    # build where; сюда добавим фильтр по товару
+    where_sql, params, bind_params = _build_where_and_bindparams(
+        sklads=sklads, groups=None, project=project, artikul=None
+    )
+    # добавляем фильтр по товару (артикул или товар_id)
+    # используем AND (...) — переменная tovar_id — скаляр
+    if where_sql and where_sql != "1=1":
+        where_sql = f"({where_sql}) AND (товар_id = :tovar_id OR артикул = :tovar_id)"
+    else:
+        where_sql = "(товар_id = :tovar_id OR артикул = :tovar_id)"
+    params["tovar_id"] = str(tovar_id)
 
     sql = f"""
         SELECT
-            дата,
+            дата::date AS дата,
             склад,
             товар_id,
             MAX(артикул) AS артикул,
@@ -482,30 +539,33 @@ def get_product_timeseries(tovar_id=None, sklads=None, project=None):
             SUM(пополнение) AS пополнение,
             AVG(цена) AS цена
         FROM alyans_refresh_v3
-        WHERE {' AND '.join(where)}
+        WHERE {where_sql}
         GROUP BY дата, склад, товар_id
-        ORDER BY дата
+        ORDER BY дата ASC
     """
 
     try:
         with engine.connect() as conn:
-            res = conn.execute(text(sql), params)
+            stmt = text(sql)
+            if bind_params:
+                stmt = stmt.bindparams(*bind_params)
+            res = conn.execute(stmt, params)
             df = pd.DataFrame(res.fetchall(), columns=res.keys())
 
         if df.empty:
             return df
 
         df["дата"] = pd.to_datetime(df["дата"], errors="coerce")
-        numeric_cols = ["остаток", "продано", "пополнение", "цена"]
-        for col in numeric_cols:
+        for col in ["остаток", "продано", "пополнение", "цена"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
+        # Сортируем по дате и складу и возвращаем
+        df = df.sort_values(["дата", "склад"]).reset_index(drop=True)
         return df
 
     except Exception:
         logger.exception("[get_product_timeseries] Ошибка временного ряда")
         return pd.DataFrame()
-
 
 # --- Функции подготовки данных ---
 
