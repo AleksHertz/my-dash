@@ -1062,6 +1062,15 @@ app.layout = html.Div([
                 ], style={"marginBottom": "10px"}),
 
                 html.H3(id="top-title", style={"marginTop": "20px"}),
+                html.Label("Поиск по таблице (ключевые слова):"),
+                dcc.Input(
+                    id="top-2025-search",
+                    type="text",
+                    placeholder="Например: рессора (не найдёт 'компрессора')",
+                    value="",
+                    debounce=False,  # пересборка на лету
+                    style={"width": "100%", "marginBottom": "10px"}
+                ),
 
                 dash_table.DataTable(
                     id="top-100-table",
@@ -1330,6 +1339,54 @@ def handle_alyans_upload(content, filename):
     threading.Thread(target=process_alyans_upload, args=(content, filename), daemon=True).start()
     return f"🚀 Обработка файла '{filename}' запущена...", "", {"display": "none"}, False
 
+
+# ===================== Поиск по целым словам (без совпадений внутри слов) =====================
+
+WORD_CHARS = r"0-9A-Za-zА-Яа-яЁё_"
+
+def _split_keywords(s: str):
+    if not s:
+        return []
+    # разбиваем по пробелам/табам, убираем пустое
+    return [w.strip() for w in re.split(r"\s+", str(s).strip()) if w.strip()]
+
+def _whole_word_regex(token: str) -> str:
+    """
+    Делает regex для поиска token как отдельного слова.
+    Пример: 'рессора' не совпадёт с 'компрессора'.
+    """
+    t = re.escape(str(token))
+    # границы слова по нашему алфавитно-цифровому набору (включая кириллицу)
+    return rf"(?<![{WORD_CHARS}]){t}(?![{WORD_CHARS}])"
+
+def filter_df_by_keywords_whole_words(df: pd.DataFrame, keywords: str, cols):
+    """
+    AND-логика по словам:
+      - пользователь ввёл "рессора задняя" -> должны встретиться оба слова (где угодно в указанных колонках)
+    Поиск по целым словам.
+    """
+    words = _split_keywords(keywords)
+    if df.empty or not words:
+        return df
+
+    # приводим нужные колонки к строкам (без NaN)
+    dff = df.copy()
+    for c in cols:
+        if c not in dff.columns:
+            dff[c] = ""
+        dff[c] = dff[c].astype(str).fillna("")
+
+    mask_all = pd.Series(True, index=dff.index)
+
+    for w in words:
+        rx = _whole_word_regex(w)
+        # слово должно встретиться ХОТЯ БЫ в одной из колонок
+        mask_word = pd.Series(False, index=dff.index)
+        for c in cols:
+            mask_word = mask_word | dff[c].str.contains(rx, case=False, regex=True, na=False)
+        mask_all = mask_all & mask_word
+
+    return dff[mask_all]
 
 # ===============================================================
 # ========== 2️⃣ Отображение прогресса обработки =================
@@ -2198,14 +2255,15 @@ def update_line_graph(selected_article, selected_nom, selected_sklads, selected_
 # ------------------- Таблица ТОП-N -------------------
 @app.callback(
     Output("top-100-table", "data"),
-    Output("top-100-table", "selected_rows"),  # сохраняем/сбрасываем выбор
-    Output("top-title", "children"),           # <-- динамический заголовок
+    Output("top-100-table", "selected_rows"),
+    Output("top-title", "children"),
     Input("sklad-2025-filter", "value"),
-    Input("top-size-selector", "value"),       # <-- выбор размера ТОПа
+    Input("top-size-selector", "value"),
+    Input("top-2025-search", "value"),  # ✅ добавили
     State("top-100-table", "data"),
     State("top-100-table", "selected_rows"),
 )
-def update_top_table(selected_sklads, top_n, prev_data, prev_selected):
+def update_top_table(selected_sklads, top_n, search_value, prev_data, prev_selected):
     dff = df_2025_clean.copy()
 
     # Фильтр по складам
@@ -2220,35 +2278,38 @@ def update_top_table(selected_sklads, top_n, prev_data, prev_selected):
         dff.groupby(["Артикул_товар", "Номенклатура_канон", "Склад"], as_index=False)
            .agg({"Продано": "sum"})
            .sort_values("Продано", ascending=False)
-           .head(top_n)
     )
 
     # Переименовываем для таблицы
-    top_df = top_df.rename(
-        columns={
-            "Артикул_товар": "Артикул",
-            "Номенклатура_канон": "Номенклатура",
-        }
+    top_df = top_df.rename(columns={
+        "Артикул_товар": "Артикул",
+        "Номенклатура_канон": "Номенклатура",
+    })
+
+    # ✅ Поиск по целым словам (ищем по Артикул, Номенклатура, Склад)
+    top_df = filter_df_by_keywords_whole_words(
+        top_df,
+        keywords=search_value,
+        cols=["Артикул", "Номенклатура", "Склад"]
     )
+
+    # После поиска применяем TOP-N
+    top_df = top_df.head(int(top_n or 100))
 
     records = top_df.to_dict("records")
 
-    # --- Попытка сохранить выбор ---
+    # --- Сохраняем выбор (как у тебя) ---
     if prev_selected and prev_data:
         try:
             old_row = prev_data[prev_selected[0]]
-            # Ищем товар по Артикулу + Номенклатуре
             for idx, row in enumerate(records):
-                if (
-                    row["Артикул"] == old_row["Артикул"]
-                    and row["Номенклатура"] == old_row["Номенклатура"]
-                ):
+                if row.get("Артикул") == old_row.get("Артикул") and row.get("Номенклатура") == old_row.get("Номенклатура"):
                     return records, [idx], f"ТОП-{top_n} товаров по продажам (2025)"
         except Exception:
             pass
 
-    # Если не нашли → сбрасываем выбор
     return records, [], f"ТОП-{top_n} товаров по продажам (2025)"
+
 
 # --- нормализация артикула (оставляем) ---
 def normalize_article(article):
